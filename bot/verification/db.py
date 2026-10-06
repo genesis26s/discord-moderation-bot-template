@@ -74,6 +74,14 @@ SCHEMA: list[str] = [
         weight REAL DEFAULT 1.0, created_at INTEGER NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_abusesig ON abuse_signatures(guild_id, signature_key)",
+    """CREATE TABLE IF NOT EXISTS pending_reviews (
+        message_id INTEGER PRIMARY KEY,
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        assessment_id INTEGER,
+        created_at INTEGER NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_pending_guild_user ON pending_reviews(guild_id, user_id)",
 ]
 
 
@@ -383,4 +391,27 @@ class VerificationRepo:
         await self.db.execute(
             "INSERT INTO security_events (guild_id, user_id, kind, detail, created_at) VALUES (?, ?, ?, ?, ?)",
             (guild_id, user_id or 0, kind, detail, _now()),
+        )
+
+    # ---- pending review panels ----
+    async def save_pending_review(self, message_id: int, guild_id: int,
+                                  user_id: int, assessment_id) -> None:
+        await self.db.execute(
+            """INSERT OR REPLACE INTO pending_reviews
+               (message_id, guild_id, user_id, assessment_id, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (message_id, guild_id, user_id, assessment_id or 0, _now()),
+        )
+
+    async def get_pending_review(self, message_id: int) -> Optional[dict]:
+        row = await self.db.fetchone(
+            "SELECT * FROM pending_reviews WHERE message_id = ?",
+            (message_id,),
+        )
+        return dict(row) if row else None
+
+    async def delete_pending_review(self, message_id: int) -> None:
+        await self.db.execute(
+            "DELETE FROM pending_reviews WHERE message_id = ?",
+            (message_id,),
         )
