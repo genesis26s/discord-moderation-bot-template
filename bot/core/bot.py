@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 import discord
@@ -13,6 +14,7 @@ from bot.core import errors
 from bot.core.embeds import EmbedFactory
 from bot.database.database import Database
 from bot.database.migrations import run_migrations
+from bot.verification.db import ensure_schema
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +33,8 @@ INITIAL_COGS = [
     "bot.cogs.utility",
     "bot.cogs.information",
     "bot.cogs.security",
+    "bot.cogs.verification",
+    "bot.cogs.owner",
 ]
 
 
@@ -59,7 +63,6 @@ class SecurityBot(commands.Bot):
         intents.guilds = True
         intents.moderation = True
         intents.guild_messages = True
-        intents.guild_reactions = False
 
         super().__init__(
             command_prefix=commands.when_mentioned,
@@ -71,11 +74,18 @@ class SecurityBot(commands.Bot):
         self.db = Database(config.database_path)
         self.embeds = EmbedFactory(config)
 
-    # ---- Lifecycle ----
     async def setup_hook(self) -> None:
+        # ---- Database + migrations ----
         await self.db.connect()
         await run_migrations(self.db)
 
+        # ---- Verification subsystem schema (idempotent) ----
+        try:
+            await ensure_schema(self.db)
+        except Exception:
+            log.exception("Failed to initialise verification schema")
+
+        # ---- Load cogs ----
         for ext in INITIAL_COGS:
             try:
                 await self.load_extension(ext)
@@ -83,22 +93,37 @@ class SecurityBot(commands.Bot):
             except Exception as exc:
                 log.exception("Failed to load %s: %s", ext, exc)
 
-        # Sync commands globally. Guild sync is faster during dev.
+        # ---- Sync slash commands ----
+        dev_guild = os.getenv("DEV_GUILD_ID", "").strip()
         try:
-            synced = await self.tree.sync()
-            log.info("Synced %d slash commands.", len(synced))
+            if dev_guild.isdigit():
+                guild_obj = discord.Object(id=int(dev_guild))
+                self.tree.copy_global_to(guild=guild_obj)
+                synced = await self.tree.sync(guild=guild_obj)
+                log.info(
+                    "Synced %d slash commands to DEV guild %s (instant).",
+                    len(synced), dev_guild,
+                )
+            else:
+                synced = await self.tree.sync()
+                log.info(
+                    "Synced %d slash commands globally (may take up to 1h to appear).",
+                    len(synced),
+                )
         except Exception:
             log.exception("Failed to sync commands")
+
+        # ---- Global error handler ----
+        self.tree.on_error = errors.on_app_command_error
 
     async def on_ready(self) -> None:
         await self._apply_presence()
         try:
-            await self.user.edit(username=self.config.bot_name)  # type: ignore[union-attr]
+            await self.user.edit(username=self.config.bot_name)
         except discord.HTTPException:
-            # Rate limited / name change unavailable — ignore.
             pass
-        log.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "?")  # type: ignore[union-attr]
-        log.info("Ready — serving %d guild(s).", len(self.guilds))
+        log.info("Logged in as %s (%s)", self.user, getattr(self.user, "id", "?"))
+        log.info("Ready - serving %d guild(s).", len(self.guilds))
 
     async def _apply_presence(self) -> None:
         status_map = {
@@ -108,15 +133,34 @@ class SecurityBot(commands.Bot):
             "invisible": discord.Status.invisible,
         }
         status = status_map.get(self.config.bot_status, discord.Status.online)
-        activity = _activity_from_config(self.config)
-        await self.change_presence(status=status, activity=activity)
+        await self.change_presence(status=status, activity=_activity_from_config(self.config))
 
     async def close(self) -> None:
+        # Close verification providers cleanly if the cog wired any
+        try:
+            cog = self.get_cog("Verification")
+            if cog is not None:
+                svc = getattr(cog, "service", None)
+                if svc is not None:
+                    roblox = getattr(svc, "roblox_provider", None)
+                    if roblox is not None and hasattr(roblox, "close"):
+                        try:
+                            await roblox.close()
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
         await self.db.close()
         await super().close()
 
-    async def on_app_command_completion(self, interaction: discord.Interaction, command: app_commands.Command) -> None:
-        log.debug("Command %s used by %s in %s", command.qualified_name, interaction.user, interaction.guild_id)
+    async def on_app_command_completion(
+        self, interaction: discord.Interaction, command: app_commands.Command,
+    ) -> None:
+        log.debug(
+            "Command %s used by %s in %s",
+            command.qualified_name, interaction.user, interaction.guild_id,
+        )
 
     async def on_error(self, event_method: str, /, *args, **kwargs) -> None:
         log.exception("Unhandled error in event %s", event_method)
