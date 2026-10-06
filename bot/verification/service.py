@@ -167,6 +167,39 @@ class VerificationService:
         self._cluster_fingerprint_index: dict = {}
         self._cluster_fingerprint_rarity: dict = {}
 
+        # Raid mode state (per-guild). Reset on restart.
+        self._raid_mode: dict = {}
+
+    # ---- raid mode ----
+    def is_raid_active(self, guild_id: int) -> bool:
+        state = self._raid_mode.get(guild_id)
+        if state is None:
+            return False
+        if state["expires_at"] > time.monotonic():
+            return True
+        self._raid_mode.pop(guild_id, None)
+        return False
+
+    def activate_raid_mode(self, guild_id: int, reason: str, minutes: int = 15) -> None:
+        self._raid_mode[guild_id] = {
+            "activated_at": time.monotonic(),
+            "expires_at": time.monotonic() + (minutes * 60),
+            "reason": reason,
+        }
+
+    def deactivate_raid_mode(self, guild_id: int) -> bool:
+        if guild_id in self._raid_mode:
+            self._raid_mode.pop(guild_id, None)
+            return True
+        return False
+
+    def raid_mode_remaining(self, guild_id: int) -> int:
+        state = self._raid_mode.get(guild_id)
+        if state is None:
+            return 0
+        remaining = int(state["expires_at"] - time.monotonic())
+        return max(remaining, 0)
+
     # ---- behavior hooks ----
     def on_member_join(self, member: discord.Member, account_age_days: int) -> None:
         self.behavior.record_join(member.guild.id, account_age_days)
@@ -290,7 +323,7 @@ class VerificationService:
 
         results_first = await run_detectors(self.registry, base_ctx)
         triggered_fams = {r.signal_family for r in results_first
-                          if r.status == DStatus.TRIGGERED and r.triggered}
+                          if r.status == DStatus.TRIGGERED and r.triggered and r.severity > 0}
         base_ctx.extras["triggered_families"] = triggered_fams
         cross = self.registry.get("CROSS_SIGNAL_CORRELATION")
         if cross is not None:
@@ -302,7 +335,77 @@ class VerificationService:
         verdict.assessment_id = await self.repo.save_assessment(guild_id, user_id, session_id, verdict)
 
         await self._update_clusters(guild_id, member, verdict)
+        await self._maybe_activate_raid_mode(guild_id, verdict)
         return verdict
+
+    async def _maybe_activate_raid_mode(self, guild_id: int, verdict) -> None:
+        try:
+            if verdict.risk_level.value == "CRITICAL":
+                row = await self.db.fetchone(
+                    """SELECT COUNT(*) AS c FROM risk_assessments
+                       WHERE guild_id = ? AND risk_level = 'CRITICAL' AND created_at > ?""",
+                    (guild_id, int(time.time()) - 600),
+                )
+                count = int(row["c"]) if row else 0
+                if count >= 3 and not self.is_raid_active(guild_id):
+                    self.activate_raid_mode(
+                        guild_id,
+                        "Auto-triggered: " + str(count) + " CRITICAL assessments in 10 minutes",
+                        minutes=20,
+                    )
+                    await self._emit_raid_alert(
+                        guild_id,
+                        "Auto-triggered: " + str(count) + " CRITICAL assessments in 10 minutes",
+                    )
+        except Exception:
+            pass
+
+    async def _emit_raid_alert(self, guild_id: int, reason: str) -> None:
+        try:
+            guild = self.bot.get_guild(guild_id)
+            if guild is None:
+                return
+            row = await self.db.fetchone(
+                "SELECT value FROM guild_config WHERE guild_id = ? AND key = ?",
+                (guild_id, "raid_alert_channel"),
+            )
+            if not row or not row["value"] or not str(row["value"]).isdigit():
+                row = await self.db.fetchone(
+                    "SELECT value FROM guild_config WHERE guild_id = ? AND key = ?",
+                    (guild_id, "log_security"),
+                )
+                if not row or not row["value"] or not str(row["value"]).isdigit():
+                    return
+            channel = guild.get_channel(int(row["value"]))
+            if not isinstance(channel, discord.TextChannel):
+                return
+
+            embed = discord.Embed(
+                title="RAID MODE ACTIVE",
+                description=reason,
+                color=0xED4245,
+            )
+            embed.add_field(
+                name="What this does",
+                value=(
+                    "- New-account thresholds tightened\n"
+                    "- Auto-quarantine for very fresh accounts\n"
+                    "- 20 minute auto-expiry"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Duration",
+                value=str(self.raid_mode_remaining(guild_id)) + "s remaining",
+                inline=True,
+            )
+            await channel.send(
+                content="<@here>",
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(everyone=False, users=False, roles=False),
+            )
+        except Exception:
+            pass
 
     async def _build_history(self, member: discord.Member) -> dict:
         gid = member.guild.id
@@ -346,6 +449,20 @@ class VerificationService:
         }
         hist["known_bad_signals"] = {}
         hist["user_recent_role_adds"] = self.behavior.user_role_adds_last_1h(gid, uid)
+        hist["raid_mode_active"] = self.is_raid_active(gid)
+
+        # Recent usernames for pattern-cluster detection (last 100 joins in this guild)
+        try:
+            rows = await self.db.fetchall(
+                """SELECT user_id, value FROM account_history
+                   WHERE guild_id = ? AND key = 'username'
+                   ORDER BY updated_at DESC LIMIT 100""",
+                (gid,),
+            )
+            hist["recent_usernames"] = [(str(r["value"]), int(r["user_id"])) for r in rows]
+        except Exception:
+            hist["recent_usernames"] = []
+
         return hist
 
     def _behavior_snapshot(self, guild_id: int, user_id: int, network_id: Optional[str]) -> dict:
