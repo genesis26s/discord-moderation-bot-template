@@ -16,6 +16,9 @@ class ConfidenceEngine:
             return 0.0
         c = max(0.0, min(1.0, result.confidence))
         s = max(0.0, min(1.0, result.severity))
+        # Handle negative severity (trust signals) separately
+        if s < 0:
+            return s * c
         if c < 0.3:
             c = c * 0.4
         elif c < 0.5:
@@ -47,8 +50,8 @@ class CorrelationEngine:
                 continue
             key = (r.signal_family, r.evidence_type)
             existing = by_key.get(key)
-            eff = ConfidenceEngine.effective(r)
-            if existing is None or eff > ConfidenceEngine.effective(existing):
+            eff = abs(ConfidenceEngine.effective(r))
+            if existing is None or eff > abs(ConfidenceEngine.effective(existing)):
                 by_key[key] = r
 
         grouped: dict = defaultdict(list)
@@ -82,13 +85,15 @@ class CorrelationEngine:
             cap = caps.get(fam, 20.0)
             if scores[fam] > cap:
                 scores[fam] = cap
+            if scores[fam] < -cap:
+                scores[fam] = -cap
         return scores
 
     @classmethod
     def correlation_bonus(cls, results: list[DResult]) -> float:
         fams = set()
         for r in results:
-            if r.status == DStatus.TRIGGERED and r.triggered:
+            if r.status == DStatus.TRIGGERED and r.triggered and r.severity > 0:
                 fams.add(r.signal_family)
         n = len(fams)
         if n <= 1:
