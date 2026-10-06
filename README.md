@@ -124,8 +124,8 @@ SaaS. Just a solid, self-contained security bot for a community you run.
 
 ```bash
 # 1. Clone
-git clone <your-repo-url>
-cd discord-security-bot
+git clone https://github.com/genesis26s/discord-moderation-bot-template
+cd discord-moderation-bot-template
 
 # 2. Virtualenv
 python -m venv .venv
