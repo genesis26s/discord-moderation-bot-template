@@ -10,6 +10,7 @@ tickets, and real alt detection — without collecting user IPs.
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![discord.py](https://img.shields.io/badge/discord.py-2.x-5865F2?logo=discord&logoColor=white)](https://discordpy.readthedocs.io/)
 [![SQLite](https://img.shields.io/badge/SQLite-aiosqlite-003B57?logo=sqlite&logoColor=white)](https://aiosqlite.omnilib.dev/)
+[![Detectors](https://img.shields.io/badge/Detectors-45-22c55e)](#-verification-system)
 [![License](https://img.shields.io/badge/License-MIT-22c55e)](./LICENSE)
 
 </div>
@@ -23,6 +24,7 @@ tickets, and real alt detection — without collecting user IPs.
 - [Quick start](#-quick-start)
 - [First-time setup](#-first-time-setup)
 - [Verification system](#-verification-system)
+- [Why this beats generic verifiers](#-why-this-beats-generic-verifiers)
 - [Command reference](#-command-reference)
 - [Environment variables](#-environment-variables)
 - [Database](#-database)
@@ -42,7 +44,7 @@ It ships with everything a serious community needs on day one:
 
 | Area | What you get |
 |---|---|
-| 🛡️ **Verification** | 40-detector alt & raid detection engine, 5 risk layers |
+| 🛡️ **Verification** | **45-detector** alt & raid detection engine, 5 risk layers |
 | 🔒 **Security** | Anti-nuke, anti-raid, anti-spam, AutoMod, Server Watch |
 | 🔨 **Moderation** | Ban, kick, timeout, warn, purge, lock — all with case logging |
 | 🎫 **Tickets** | Admin console, dropdown panel, transcripts, ratings |
@@ -61,13 +63,19 @@ SaaS. Just a solid, self-contained security bot for a community you run.
 
 - 🎛️ Public verification panel with per-guild configuration
 - 🎚️ Risk-based routing across 5 verification layers
-- 🔍 40 detectors across Discord, Behavior, Roblox, Network, and Historical families
+- 🔍 **45 detectors** across Discord, Behavior, Roblox, Network, Historical, and Correlation families
 - 🧠 Correlation engine — independent signals score together, duplicates collapse
+- ⭐ **Trust signals** — verified badges and account prestige reduce risk score
 - 🎮 Roblox account linking via public Roblox APIs (no credentials, no cookies)
 - 👥 Ban-evasion detection via avatar and name fingerprints
 - 🕸️ Account clustering for coordinated alt rings
+- 🔤 Username similarity detection (`genesis1` / `genesis2` / `g_enesis`)
+- ⏱️ Verification latency behavioral signal (bots click in seconds)
+- 🔗 Discord-Roblox account creation delta (coordinated alt creation)
+- 🚨 **Raid mode** — auto-tightening thresholds with admin alerts
 - 📋 Moderator review panels that survive bot restarts
 - 📊 `/verify-queue` work list for pending reviews
+- 📈 `/verify-stats` honest activity dashboard
 - 🚫 **Zero IP collection, ever**
 
 </details>
@@ -197,6 +205,7 @@ Then:
 ```
 /verification-role            role:@Verified
 /verification-quarantine-role role:@Quarantine
+/verify-set-raid-channel      channel:#raid-alerts
 /verification-panel
 ```
 
@@ -227,14 +236,15 @@ The verification pipeline is the most complex part of this bot. Here's the
   Verification session created
         │
         ▼
-  ┌──────────────────────────────────┐
-  │  40 detectors run in parallel    │
-  │  ├─ Discord   (10)               │
-  │  ├─ Behavior  (10)               │
-  │  ├─ Roblox    (8)                │
-  │  ├─ Network   (8) — UNAVAILABLE  │
-  │  └─ Historical / Correlation (4) │
-  └──────────────────────────────────┘
+  ┌───────────────────────────────────────┐
+  │  45 detectors run in parallel         │
+  │  ├─ Discord       (12)                │
+  │  ├─ Behavior      (12)                │
+  │  ├─ Roblox         (8)                │
+  │  ├─ Network        (8) — UNAVAILABLE  │
+  │  ├─ Historical     (4)                │
+  │  └─ Correlation    (1)                │
+  └───────────────────────────────────────┘
         │
         ▼
   Confidence engine → damps weak evidence
@@ -267,6 +277,95 @@ The verification pipeline is the most complex part of this bot. Here's the
 | `60–79` | 🔴 **HIGH** | Restricted verification + moderator eligibility |
 | `80–100` | ⛔ **CRITICAL** | Quarantine + manual review |
 
+### The 45 detectors
+
+<details>
+<summary><b>Discord signals (12)</b></summary>
+
+| # | Detector | What it catches |
+|---|---|---|
+| 1 | `DISCORD_ACCOUNT_AGE` | Fresh Discord account |
+| 2 | `DISCORD_ACCOUNT_UNUSUALLY_NEW` | Sub-24h accounts |
+| 3 | `SERVER_JOIN_AGE` | Fresh join |
+| 4 | `RECENT_USERNAME_CHANGE` | Identity churn |
+| 5 | `RECENT_DISPLAY_NAME_CHANGE` | Identity churn |
+| 6 | `AVATAR_REUSE` | Same avatar on multiple accounts |
+| 7 | `LOW_PROFILE_ACTIVITY` | ⚠️ UNAVAILABLE (Discord API limit) |
+| 8 | `MUTUAL_SERVER_PATTERN` | Shared guild density |
+| 9 | `KNOWN_BAD_ACCOUNT_CORRELATION` | Matches fingerprints of previously actioned accounts |
+| 10 | `ACCOUNT_CLUSTER_PATTERN` | Part of an alt cluster |
+| **41** | **`DISCORD_PUBLIC_FLAGS`** | ⭐ **Trust signal** — Early Supporter, Bug Hunter, Partner |
+| **42** | **`SNOWFLAKE_PRECISION`** | **Hour-precise account age** |
+
+</details>
+
+<details>
+<summary><b>Behavior signals (12)</b></summary>
+
+| # | Detector | What it catches |
+|---|---|---|
+| 11 | `JOIN_BURST` | Join velocity spike |
+| 12 | `VERIFICATION_BURST` | Verification velocity spike |
+| 13 | `REPEATED_VERIFICATION_FAILURE` | Repeated failures |
+| 14 | `UNUSUAL_VERIFICATION_SPEED` | Suspiciously fast completion |
+| 15 | `UNUSUAL_VERIFICATION_DELAY` | Very long delay |
+| 16 | `NEW_ACCOUNT_JOIN_WAVE` | Fresh accounts joining together |
+| 17 | `POST_JOIN_BEHAVIOR` | Mass mention / mass message |
+| 18 | `ROLE_ESCALATION_PATTERN` | Rapid role accumulation |
+| 19 | `REJOIN_PATTERN` | Multiple rejoins |
+| 20 | `BAN_EVASION_PATTERN` | Fingerprint match on previously banned account |
+| **43** | **`USERNAME_PATTERN_CLUSTER`** | **`genesis1` / `genesis2` / `g_enesis` similarity** |
+| **44** | **`VERIFICATION_LATENCY_DELTA`** | **Click latency after join** |
+
+</details>
+
+<details>
+<summary><b>Roblox signals (8)</b></summary>
+
+| # | Detector | What it catches |
+|---|---|---|
+| 21 | `ROBLOX_ACCOUNT_AGE` | Fresh Roblox account |
+| 22 | `ROBLOX_ACTIVITY_LEVEL` | Zero-friend long-lived account |
+| 23 | `ROBLOX_ACCOUNT_REUSE` | Roblox linked to multiple Discord accounts |
+| 24 | `ROBLOX_DISCORD_LINK_HISTORY` | Discord linked to multiple Roblox accounts |
+| 25 | `ROBLOX_PROFILE_ANOMALY` | Empty profile + new |
+| 26 | `ROBLOX_VERIFICATION_FAILURES` | Repeated failures |
+| 27 | `ROBLOX_LINK_BURST` | Rapid link attempts |
+| 28 | `ROBLOX_CLUSTER_CORRELATION` | Roblox account shared across a cluster |
+
+</details>
+
+<details>
+<summary><b>Network signals (8) — UNAVAILABLE by default</b></summary>
+
+| # | Detector | What it needs |
+|---|---|---|
+| 29 | `VPN_DETECTED` | IP address |
+| 30 | `PROXY_DETECTED` | IP address |
+| 31 | `DATACENTER_ASN` | IP address |
+| 32 | `IP_REPUTATION` | IP address |
+| 33 | `TOR_DETECTED` | IP address |
+| 34 | `NETWORK_RISK_SCORE` | IP address |
+| 35 | `IP_VERIFICATION_VELOCITY` | Pseudonymous IP hash |
+| 36 | `INFRASTRUCTURE_CLUSTER` | Pseudonymous IP hash |
+
+**See the [Privacy section](#-privacy--security-posture) for why these are off.**
+
+</details>
+
+<details>
+<summary><b>Historical & Correlation signals (5)</b></summary>
+
+| # | Detector | What it catches |
+|---|---|---|
+| 37 | `PREVIOUS_SERVER_HISTORY` | Repeated leave/join |
+| 38 | `PREVIOUS_VERIFICATION_HISTORY` | Prior quarantine |
+| 39 | `CROSS_SIGNAL_CORRELATION` | Multiple independent families firing |
+| 40 | `KNOWN_ABUSE_PATTERN` | Matches recorded abuse signatures |
+| **45** | **`CROSS_ACCOUNT_AGE_DELTA`** | **Discord + Roblox created within hours of each other** |
+
+</details>
+
 ### Why signals don't just add up
 
 The engine groups detectors into **signal families** and applies a cap per
@@ -285,28 +384,49 @@ Same for account age (Discord age + join age + account-created-recently could
 naïvely triple-count). The engine collapses them.
 
 A separate **correlation bonus** fires when *independent* families trigger
-together — e.g. Discord + Roblox + Behavior all firing is far more significant
+together — Discord + Roblox + Behavior all firing is far more significant
 than any one of them alone.
 
-### The network layer is off — by design
+### Trust signals
 
-> **The bot does not collect, store, or transmit IP addresses.**
+New in this version: detectors can produce **negative** scores. When a member
+has a verifiable Discord badge — Early Supporter (pre-2018 account), Bug
+Hunter, Discord Partner, Certified Moderator, Active Developer — the risk
+engine subtracts from their score.
 
-Discord does not expose member IPs to bots. The only way to obtain them is
-to route users through a browser OAuth flow — which this bot intentionally
-does not do.
+The subtraction is capped at the family level, so a single trust signal can
+never fully mask genuine risk signals from other families. It's a tiebreaker,
+not a free pass.
 
-The 8 network detectors (VPN, proxy, Tor, datacenter, IP reputation, etc.)
-return `UNAVAILABLE` and contribute **zero risk**. This is not a bug or a
-missing feature. It's the correct, privacy-preserving state.
+### Raid mode
 
-To enable network detection you'd need to:
-1. Write a browser OAuth flow
-2. Obtain consent to process IPs
-3. Contract with a network intelligence provider
+When 3+ CRITICAL assessments happen within 10 minutes, raid mode activates
+automatically for 20 minutes:
 
-For a single community server, none of that is worth it. The Discord +
-Roblox + behavior signals catch the raids that matter.
+- Alert posted to `#raid-alerts` with `@here` ping
+- New-account thresholds tighten internally
+- Extremely fresh accounts auto-quarantine on join
+
+Manual control:
+
+```
+/verify-raid-mode action:activate minutes:30
+/verify-raid-mode action:status
+/verify-raid-mode action:deactivate
+```
+
+### Why the Network family is UNAVAILABLE
+
+The **Network** family checks IP-based signals: VPN, proxy, Tor exit nodes,
+datacenter ASNs, and IP reputation. **Discord does not give bots member IPs** —
+not on join, not through any API, ever.
+
+Getting IPs requires routing users through a browser OAuth flow. This bot
+intentionally avoids that, so 8 detectors sit at `UNAVAILABLE` and contribute
+**zero risk**.
+
+This is not a missing feature. It's a design choice: no IP collection, no
+browser hops, no third-party data sharing.
 
 ### Redaction
 
@@ -323,6 +443,116 @@ before display:
 
 Applied at the logging sink, so it catches accidental leaks from anywhere
 in the codebase, not just the verification subsystem.
+
+---
+
+## 🏆 Why this beats generic verifiers
+
+If you've looked at other verification bots, you've seen claims like
+**"98% detection rate"**, **"VPN blocking"**, and **"device fingerprinting"**.
+Here's an honest comparison.
+
+### How those other bots work
+
+```
+  User clicks "Verify" in Discord
+        ↓
+  Bot DMs a web link
+        ↓
+  User opens the link in a browser   ← their IP is captured HERE
+        ↓
+  Web page runs JavaScript            ← device fingerprint collected HERE
+        ↓
+  Result checked against their global database of bans
+        ↓
+  Verdict returned to Discord
+```
+
+Their detection rate comes from two things:
+
+1. **The OAuth flow** — how they get IPs and device fingerprints
+2. **Cross-server aggregation** — bans from hundreds of thousands of servers pooled together
+
+The algorithm isn't magic. The data network is.
+
+### How this bot works
+
+```
+  User clicks "Verify" in Discord
+        ↓
+  45 detectors run on Discord + Roblox data only
+        ↓
+  Risk engine produces a verdict
+        ↓
+  Role granted or review requested
+```
+
+No browser. No IP. No third party. No data sharing.
+
+### Head-to-head
+
+| Aspect | Generic verifiers | This bot |
+|---|---|---|
+| **Friction** | Web link → browser → return | Click a button in Discord |
+| **Privacy** | Collects IPs, device fingerprints | Collects only Discord + voluntary Roblox data |
+| **Third parties** | Feeds your bans to their global DB | Never shares data with anyone |
+| **Discord badges** | Not emphasized | Native — Early Supporter is impossible to fake |
+| **Hour-precise account age** | Not exposed | Yes |
+| **Username similarity clustering** | Not a headline feature | Native |
+| **Verification latency behavioral signal** | Not used | Yes |
+| **Discord-Roblox creation delta** | Not used | Yes |
+| **Trust signal scoring** | Rare | Native (negative scores) |
+| **Cross-server correlation** | ✅ Strong | ❌ Can't replicate |
+| **VPN / proxy / Tor detection** | ✅ Uses IPs | ❌ Can't without IPs |
+| **Cost** | Monthly subscription | Free |
+
+**You don't beat them at their game.** You play a different game where you're
+stronger: user friction is zero, data never leaves your server, and you use
+signals that only Discord exposes natively (badges, hour-precise timestamps,
+username clustering) which other bots ignore because they've built everything
+around IP aggregation.
+
+The trade-off is real: you will miss sophisticated attackers who have
+5-year-old Discord + Roblox accounts and residential proxies. But that's not
+your threat model — your threat model is alt-farming raids, ban evasion, and
+coordinated fresh-account waves. Those are covered.
+
+### What you get with `/verify-stats`
+
+An honest dashboard that other verifiers don't offer:
+
+```
+  Verification Statistics
+  ───────────────────────────────────
+  Activity
+    Last 24h: 12
+    Last 7d: 87
+
+  Risk breakdown (7d)
+    🟢 LOW: 71 (81.6%)
+    🟡 GUARDED: 11 (12.6%)
+    🟠 ELEVATED/HIGH: 3 (3.4%)
+    ⛔ CRITICAL: 2 (2.3%)
+
+  Moderator review (7d)
+    Quarantined: 4
+    Approved: 2
+    Rejected: 1
+    Marked false positive: 1
+
+  Moderator-confirmed accuracy
+    66.7% of reviewed quarantines were approved
+    Based on 3 reviews. Not a marketing number —
+    a measurement of your server's actual outcomes.
+
+  Top triggered detectors (7d)
+    DISCORD_ACCOUNT_AGE: 41
+    VERIFICATION_LATENCY_DELTA: 28
+    CROSS_ACCOUNT_AGE_DELTA: 12
+```
+
+No "98%" — because nobody can prove that. Just what actually happened on
+your server.
 
 ---
 
@@ -344,6 +574,9 @@ Use `/help` for the interactive dropdown. Full list by category:
 | `/verify-queue` | List members pending manual review |
 | `/verify-review <member>` | Open the review panel |
 | `/verify-false-positive <member>` | Mark an assessment as a false positive |
+| `/verify-raid-mode <action>` | Activate / deactivate / status raid mode |
+| `/verify-set-raid-channel <channel>` | Set the raid alert channel |
+| `/verify-stats` | Show verification statistics |
 | `/verify-add-signature` | Add an abuse signature |
 | `/verify-remove-signature` | Remove an abuse signature |
 | `/verification-config` | Show verification configuration |
@@ -579,6 +812,7 @@ This bot is deliberately conservative about user data.
 - Guild join / leave history (per-guild)
 - Roblox account IDs **only if the user voluntarily links them**
 - Verification assessments, risk scores, and moderator decisions
+- Avatar and username **hashes** (one-way, not reversible to the original URL/text)
 
 ### What we do NOT collect
 
@@ -610,6 +844,18 @@ No Roblox credentials are ever requested, transmitted, or stored.
 Every log field passes through `RedactionManager` before reaching Discord.
 Patterns include IPv4, IPv6, bearer tokens, basic auth, cookies, API keys,
 Discord token shapes, `.ROBLOSECURITY`, long hex strings, and emails.
+
+### Why no IPs
+
+Adding IP detection would mean:
+
+1. Adding a browser OAuth flow (users leave Discord, verify on a website)
+2. Storing or processing IP addresses
+3. Contracting with an external network intelligence provider
+
+For a single community server, none of that is worth it. The 45-detector
+engine, minus the 8 network detectors, catches the attacks that actually
+happen: alt-farming raids, ban evasion, coordinated fresh-account waves.
 
 ---
 
@@ -673,7 +919,7 @@ discord-security-bot/
 │   │
 │   └── verification/                # verification subsystem
 │       ├── service.py               # orchestrator
-│       ├── detectors.py             # 40 detectors
+│       ├── detectors.py             # 45 detectors
 │       ├── engines.py               # confidence / correlation / clusters
 │       ├── risk.py                  # scoring + 5 layers
 │       ├── session.py               # state machine
@@ -689,6 +935,14 @@ discord-security-bot/
 ---
 
 ## 🛠️ Development
+
+### Adding a detector
+
+1. Subclass `Detector` in `bot/verification/detectors.py`
+2. Set `id`, `family`, `evidence_type`, `default_weight`
+3. Implement `async def evaluate(ctx) -> DResult`
+4. Return `self._ok(...)`, `self._unavailable(...)`, `self._unknown(...)`, or `self._error(...)`
+5. Append an instance to `ALL_DETECTORS`
 
 ### Adding a cog
 
@@ -716,6 +970,8 @@ running the bot against a throwaway server and walking through:
 3. Ban the alt, rejoin with a fresh account using the same avatar
 4. `/verify-status @alt` — ban evasion detector should fire
 5. `/verify-queue` — should list any quarantined members
+6. `/verify-stats` — should show non-zero activity
+7. `/verify-raid-mode action:status` — should show inactive
 
 ---
 
@@ -728,6 +984,8 @@ Honest list. Every one of these is a deliberate trade-off, not an oversight.
 - **Behavior tracker is in-memory.** Join-burst and verification-burst
   baselines reset when the bot restarts. On a stable host this is rare; on a
   free host with frequent restarts, expect some loss of session history.
+- **Raid mode state is in-memory.** Resets on restart. The 20-minute expiry
+  is short enough that this is rarely visible.
 - **Roblox public API can rate-limit.** Under a genuine raid (10+ concurrent
   verifications), Roblox's unauthenticated endpoints may return 429. Detectors
   will return `UNAVAILABLE` for those users, contributing zero risk.
@@ -736,6 +994,8 @@ Honest list. Every one of these is a deliberate trade-off, not an oversight.
   practice this is invisible to users.
 - **No automated test suite.** Testing is manual. This is a trade-off made for
   speed on a single-server deployment.
+- **No cross-server correlation.** What one verifier flags on another server
+  has no effect here. Your ban list is yours alone.
 
 ---
 
@@ -748,5 +1008,7 @@ MIT — see [LICENSE](./LICENSE).
 ---
 
 **Built for a community that wanted a bot that actually works.**
+
+45 detectors · Zero IP collection · No third-party data sharing
 
 </div>
