@@ -1,4 +1,4 @@
-"""Verification cog - full lifecycle, UI, moderation review."""
+"""Verification cog - full lifecycle, UI, moderation review, queue."""
 from __future__ import annotations
 
 import os
@@ -219,7 +219,7 @@ async def _finish(interaction: discord.Interaction, svc: VerificationService,
                                color=0xED4245,
                                fields=base_fields + [("Signals", signals_text, False),
                                                      ("Action", "Member quarantined, pending moderator review", False),
-                                                     ("Review", "Use /verify-review to approve, reject, or release", False)])
+                                                     ("Review", "Use /verify-review or /verify-queue", False)])
     except Exception:
         pass
     embed = discord.Embed(title="Manual review required",
@@ -229,17 +229,19 @@ async def _finish(interaction: discord.Interaction, svc: VerificationService,
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
+# ---------------------------------------------------------------------------
+# Persistent moderator review panel
+# ---------------------------------------------------------------------------
 class ReviewView(discord.ui.View):
-    def __init__(self, *, guild_id: int, user_id: int,
-                 assessment_id, author_id: int):
-        super().__init__(timeout=600)
-        self.guild_id = guild_id
-        self.user_id = user_id
-        self.assessment_id = assessment_id
-        self.author_id = author_id
+    """Persistent review panel. State is loaded from the DB per interaction
+    so buttons keep working after a bot restart."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Guild only.", ephemeral=True)
             return False
         perms = interaction.user.guild_permissions
         if not (perms.moderate_members or perms.administrator):
@@ -247,24 +249,44 @@ class ReviewView(discord.ui.View):
             return False
         return True
 
+    async def _load_pending(self, interaction: discord.Interaction):
+        svc: VerificationService = interaction.client.verification  # type: ignore[attr-defined]
+        guild = interaction.guild
+        if guild is None or interaction.message is None:
+            return None
+        pending = await svc.repo.get_pending_review(interaction.message.id)
+        if pending is None or int(pending["guild_id"]) != guild.id:
+            return None
+        return pending
+
     async def _apply(self, interaction: discord.Interaction, decision: str,
-                     remove_quarantine: bool, add_verified: bool):
+                     remove_quarantine: bool, add_verified: bool) -> None:
         svc: VerificationService = interaction.client.verification  # type: ignore[attr-defined]
         guild = interaction.guild
         if guild is None:
             return
+        pending = await self._load_pending(interaction)
+        if pending is None:
+            return await interaction.response.send_message(
+                "This review panel has expired or was replaced.", ephemeral=True)
+
+        user_id = int(pending["user_id"])
+        assessment_id = int(pending["assessment_id"] or 0)
+
         try:
             await svc.rate.hit("mod_action:g" + str(guild.id), limit=60, window_seconds=3600)
         except Exception:
             return await interaction.response.send_message("Too many actions this hour.", ephemeral=True)
+
         try:
-            await svc.repo.record_review(guild.id, self.user_id, self.assessment_id,
+            await svc.repo.record_review(guild.id, user_id, assessment_id,
                                          decision, interaction.user.id, "")
-            await svc.repo.log_event(guild.id, self.user_id, "review",
+            await svc.repo.log_event(guild.id, user_id, "review",
                                      "decision=" + decision + " mod=" + str(interaction.user.id))
         except Exception:
             pass
-        member = guild.get_member(self.user_id)
+
+        member = guild.get_member(user_id)
         if member is not None:
             qid = await svc.config.get(guild.id, "verify_quarantine_role_id")
             vid = await svc.config.get(guild.id, "verify_role_id")
@@ -277,6 +299,12 @@ class ReviewView(discord.ui.View):
                     await member.add_roles(vrole, reason="Review: " + decision)
             except discord.HTTPException:
                 pass
+
+        try:
+            await svc.repo.delete_pending_review(interaction.message.id)
+        except Exception:
+            pass
+
         try:
             if decision == "APPROVE":
                 color = 0x57F287
@@ -287,48 +315,79 @@ class ReviewView(discord.ui.View):
             await svc.logging.emit(guild, "verification",
                                     title="Verification Review - " + decision,
                                     color=color,
-                                    fields=[("Member", "<@" + str(self.user_id) + "> (`" + str(self.user_id) + "`)", True),
+                                    fields=[("Member", "<@" + str(user_id) + "> (`" + str(user_id) + "`)", True),
                                             ("Moderator", interaction.user.mention, True),
                                             ("Decision", "`" + decision + "`", True),
-                                            ("Assessment ID", "`" + str(self.assessment_id or 0) + "`", True)])
+                                            ("Assessment ID", "`" + str(assessment_id) + "`", True)])
         except Exception:
             pass
-        await interaction.response.send_message("Decision recorded: " + decision, ephemeral=True)
 
-    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success)
+        try:
+            done_embed = discord.Embed(
+                title="Review completed",
+                description="**" + decision + "** recorded by " + interaction.user.mention +
+                            " for <@" + str(user_id) + ">.",
+                color=color,
+            )
+            await interaction.response.edit_message(embed=done_embed, view=None)
+        except discord.HTTPException:
+            await interaction.response.send_message("Decision recorded: " + decision, ephemeral=True)
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success,
+                       custom_id="verify_review:approve")
     async def approve(self, interaction: discord.Interaction, _b: discord.ui.Button):
         await self._apply(interaction, "APPROVE", remove_quarantine=True, add_verified=True)
 
-    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger,
+                       custom_id="verify_review:reject")
     async def reject(self, interaction: discord.Interaction, _b: discord.ui.Button):
         await self._apply(interaction, "REJECT", remove_quarantine=False, add_verified=False)
 
-    @discord.ui.button(label="Release", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Release", style=discord.ButtonStyle.primary,
+                       custom_id="verify_review:release")
     async def release(self, interaction: discord.Interaction, _b: discord.ui.Button):
         await self._apply(interaction, "RELEASE", remove_quarantine=True, add_verified=False)
 
-    @discord.ui.button(label="Reset", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Reset", style=discord.ButtonStyle.secondary,
+                       custom_id="verify_review:reset")
     async def reset(self, interaction: discord.Interaction, _b: discord.ui.Button):
         await self._apply(interaction, "RESET_VERIFICATION", remove_quarantine=True, add_verified=False)
 
-    @discord.ui.button(label="Reassess", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="Reassess", style=discord.ButtonStyle.primary, row=1,
+                       custom_id="verify_review:reassess")
     async def reassess(self, interaction: discord.Interaction, _b: discord.ui.Button):
         svc: VerificationService = interaction.client.verification  # type: ignore[attr-defined]
         guild = interaction.guild
         if guild is None:
             return
+        pending = await self._load_pending(interaction)
+        if pending is None:
+            return await interaction.response.send_message(
+                "This review panel has expired.", ephemeral=True)
+        user_id = int(pending["user_id"])
+
         try:
             await svc.rate.hit("reassess:g" + str(guild.id), limit=10, window_seconds=3600)
         except Exception:
             return await interaction.response.send_message("Too many reassessments this hour.", ephemeral=True)
-        member = guild.get_member(self.user_id)
+
+        member = guild.get_member(user_id)
         if member is None:
             return await interaction.response.send_message("Member is not present.", ephemeral=True)
+
         await interaction.response.defer(ephemeral=True)
         try:
             verdict = await svc.assess(member, "reassess", 0.0)
         except Exception:
             return await interaction.followup.send("Reassessment failed.", ephemeral=True)
+
+        try:
+            if interaction.message is not None:
+                await svc.repo.save_pending_review(
+                    interaction.message.id, guild.id, user_id, verdict.assessment_id)
+        except Exception:
+            pass
+
         embed = discord.Embed(title="Reassessment - " + str(member), color=0x5865F2)
         embed.add_field(name="Risk score", value=str(verdict.risk_score) + "/100", inline=True)
         embed.add_field(name="Risk level", value=verdict.risk_level.value, inline=True)
@@ -337,21 +396,29 @@ class ReviewView(discord.ui.View):
         embed.add_field(name="Assessment ID", value=str(verdict.assessment_id or 0), inline=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="History", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="History", style=discord.ButtonStyle.secondary, row=1,
+                       custom_id="verify_review:history")
     async def history(self, interaction: discord.Interaction, _b: discord.ui.Button):
         svc: VerificationService = interaction.client.verification  # type: ignore[attr-defined]
         guild = interaction.guild
         if guild is None:
             return
-        rows = await svc.repo.history_assessments(guild.id, self.user_id, limit=10)
-        reviews = await svc.repo.list_reviews(guild.id, self.user_id, limit=10)
-        embed = discord.Embed(title="History - <@" + str(self.user_id) + ">", color=0x5865F2)
+        pending = await self._load_pending(interaction)
+        if pending is None:
+            return await interaction.response.send_message(
+                "This review panel has expired.", ephemeral=True)
+        user_id = int(pending["user_id"])
+
+        rows = await svc.repo.history_assessments(guild.id, user_id, limit=10)
+        reviews = await svc.repo.list_reviews(guild.id, user_id, limit=10)
+        embed = discord.Embed(title="History - <@" + str(user_id) + ">", color=0x5865F2)
         if not rows and not reviews:
             embed.description = "No history."
         for r in rows[:5]:
             embed.add_field(
                 name="Assessment #" + str(r["id"]) + " (" + r["risk_level"] + ")",
-                value="score=" + str(r["risk_score"]) + " conf=" + format(float(r["confidence"]), ".0%") +
+                value="score=" + str(r["risk_score"]) +
+                      " conf=" + format(float(r["confidence"]), ".0%") +
                       " layer=" + str(r["required_layer"]),
                 inline=False,
             )
@@ -364,6 +431,72 @@ class ReviewView(discord.ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+# ---------------------------------------------------------------------------
+# Queue view
+# ---------------------------------------------------------------------------
+class QueueSelectView(discord.ui.View):
+    def __init__(self, *, guild_id: int, author_id: int, members: list):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.author_id = author_id
+
+        options = []
+        for m in members[:25]:
+            label = str(m)[:100]
+            options.append(discord.SelectOption(label=label, value=str(m.id)))
+        if options:
+            sel = discord.ui.Select(placeholder="Select a member to review...", options=options)
+            sel.callback = self._on_pick
+            self.add_item(sel)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("Not your session.", ephemeral=True)
+            return False
+        return True
+
+    async def _on_pick(self, interaction: discord.Interaction):
+        svc: VerificationService = interaction.client.verification  # type: ignore[attr-defined]
+        guild = interaction.guild
+        if guild is None:
+            return
+        values = (interaction.data or {}).get("values") or []
+        if not values:
+            return await interaction.response.send_message("Nothing selected.", ephemeral=True)
+        try:
+            user_id = int(values[0])
+        except ValueError:
+            return await interaction.response.send_message("Invalid selection.", ephemeral=True)
+
+        member = guild.get_member(user_id)
+        if member is None:
+            return await interaction.response.send_message("Member not found.", ephemeral=True)
+
+        row = await svc.repo.latest_assessment(guild.id, user_id)
+        embed = discord.Embed(title="Security assessment - " + str(member), color=0x5865F2)
+        if row:
+            embed.add_field(name="Risk score", value=str(row["risk_score"]) + "/100", inline=True)
+            embed.add_field(name="Risk level", value=str(row["risk_level"]), inline=True)
+            embed.add_field(name="Confidence", value=format(float(row["confidence"]), ".0%"), inline=True)
+            embed.add_field(name="Layer", value=str(row["required_layer"]), inline=True)
+            embed.add_field(name="Assessment ID", value=str(row["id"]), inline=True)
+            embed.add_field(name="Recommendation", value=row["recommendation"] or "-", inline=False)
+        else:
+            embed.description = "No assessment on record for this member."
+
+        view = ReviewView()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        try:
+            msg = await interaction.original_response()
+            await svc.repo.save_pending_review(
+                msg.id, guild.id, user_id, row["id"] if row else None)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# The cog
+# ---------------------------------------------------------------------------
 class Verification(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -377,6 +510,7 @@ class Verification(commands.Cog):
 
     async def cog_load(self) -> None:
         self.bot.add_view(VerifyPanelView())
+        self.bot.add_view(ReviewView())
         for guild in self.bot.guilds:
             try:
                 await self.service.rebuild_fingerprint_index(guild.id)
@@ -564,9 +698,62 @@ class Verification(commands.Cog):
             embed.add_field(name="Recommendation", value=row["recommendation"] or "-", inline=False)
         else:
             embed.description = "No assessment on record for this member."
-        view = ReviewView(guild_id=interaction.guild_id, user_id=member.id,
-                          assessment_id=row["id"] if row else None,
-                          author_id=interaction.user.id)
+        view = ReviewView()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        try:
+            msg = await interaction.original_response()
+            await self.service.repo.save_pending_review(
+                msg.id, interaction.guild_id, member.id, row["id"] if row else None)
+        except Exception:
+            pass
+
+    @app_commands.command(name="verify-queue",
+                          description="List members currently pending verification review.")
+    @is_moderator()
+    async def verify_queue(self, interaction: discord.Interaction):
+        gid = interaction.guild_id
+        guild = interaction.guild
+        if gid is None or guild is None:
+            return await interaction.response.send_message("Guild only.", ephemeral=True)
+
+        qid = await self.config.get(gid, "verify_quarantine_role_id")
+        if not qid or not qid.isdigit():
+            return await interaction.response.send_message(
+                "Quarantine role is not configured. Use `/verification-quarantine-role`.",
+                ephemeral=True)
+        qrole = guild.get_role(int(qid))
+        if qrole is None:
+            return await interaction.response.send_message(
+                "The configured quarantine role no longer exists.", ephemeral=True)
+
+        members = [m for m in guild.members if qrole in m.roles and not m.bot]
+        if not members:
+            embed = discord.Embed(
+                title="Verification Queue",
+                description="No members are currently pending review.",
+                color=0x57F287)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        shown = members[:25]
+        embed = discord.Embed(
+            title="Verification Queue",
+            description="Select a member below to open their review panel.",
+            color=0x5865F2)
+        if len(members) > 25:
+            embed.set_footer(text=str(len(members)) + " pending - showing first 25")
+        else:
+            embed.set_footer(text=str(len(members)) + " pending")
+
+        for m in shown:
+            row = await self.service.repo.latest_assessment(gid, m.id)
+            if row:
+                value = ("Score " + str(row["risk_score"]) + "/100 | " +
+                         str(row["risk_level"]) + " | Layer " + str(row["required_layer"]))
+            else:
+                value = "No assessment on record"
+            embed.add_field(name=str(m), value=value, inline=False)
+
+        view = QueueSelectView(guild_id=gid, author_id=interaction.user.id, members=shown)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(name="verify-false-positive", description="Mark the latest assessment as a false positive.")
