@@ -61,7 +61,6 @@ class LoggingService:
         if channel is None:
             return
 
-        # Every string passes through redaction before it touches the embed.
         embed = discord.Embed(
             title=_clean(title)[:256],
             description=_clean(description)[:4000] if description else None,
