@@ -8,8 +8,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
-from bot.verification.redaction import r
-
 
 class VState(str, Enum):
     CREATED = "CREATED"
@@ -25,15 +23,14 @@ class VState(str, Enum):
     REJECTED = "REJECTED"
 
 
-# Legal transitions. Anything not listed here is rejected.
-_TRANSITIONS: dict[VState, set[VState]] = {
+_TRANSITIONS: dict = {
     VState.CREATED: {VState.SECURITY_CHECK, VState.EXPIRED, VState.FAILED},
     VState.SECURITY_CHECK: {VState.LAYER_SELECTED, VState.MANUAL_REVIEW, VState.EXPIRED, VState.FAILED},
     VState.LAYER_SELECTED: {VState.CHALLENGE_REQUIRED, VState.QUARANTINED, VState.MANUAL_REVIEW, VState.EXPIRED},
     VState.CHALLENGE_REQUIRED: {VState.CHALLENGE_ACTIVE, VState.EXPIRED, VState.FAILED},
     VState.CHALLENGE_ACTIVE: {VState.COMPLETED, VState.FAILED, VState.EXPIRED, VState.MANUAL_REVIEW},
     VState.COMPLETED: set(),
-    VState.FAILED: {VState.CREATED},       # allow a fresh attempt
+    VState.FAILED: {VState.CREATED},
     VState.EXPIRED: {VState.CREATED},
     VState.QUARANTINED: {VState.MANUAL_REVIEW, VState.COMPLETED, VState.REJECTED},
     VState.MANUAL_REVIEW: {VState.COMPLETED, VState.REJECTED, VState.QUARANTINED},
@@ -61,7 +58,7 @@ class VerificationSession:
     layer: int = 1
     assessment_id: Optional[int] = None
     last_transition_at: float = field(default_factory=time.monotonic)
-    notes: list[str] = field(default_factory=list)
+    notes: list = field(default_factory=list)
 
     def is_expired(self) -> bool:
         return self.expires_at > 0 and time.monotonic() > self.expires_at
@@ -71,7 +68,7 @@ class VerificationSession:
 
     def transition(self, target: VState) -> None:
         if not self.can_transition(target):
-            raise InvalidTransition(f"Cannot move from {self.state.value} to {target.value}")
+            raise InvalidTransition("Cannot move from " + self.state.value + " to " + target.value)
         self.state = target
         self.last_transition_at = time.monotonic()
 
@@ -85,11 +82,9 @@ class VerificationSession:
 
 
 class SessionManager:
-    """In-memory sessions + DB persistence for restart recovery."""
-
     def __init__(self, timeout_seconds: int = 900) -> None:
-        self._sessions: dict[str, VerificationSession] = {}
-        self._by_user: dict[tuple[int, int], str] = {}
+        self._sessions: dict = {}
+        self._by_user: dict = {}
         self._lock = asyncio.Lock()
         self.timeout_seconds = timeout_seconds
 
@@ -107,7 +102,7 @@ class SessionManager:
                 sess = self._sessions.get(existing_id)
                 if sess and sess.state in (VState.CREATED, VState.SECURITY_CHECK, VState.LAYER_SELECTED,
                                            VState.CHALLENGE_REQUIRED, VState.CHALLENGE_ACTIVE):
-                    return sess  # reuse in-flight session
+                    return sess
                 if sess:
                     self._sessions.pop(existing_id, None)
                     self._by_user.pop(existing_key, None)
@@ -156,8 +151,39 @@ class SessionManager:
                     removed += 1
             return removed
 
+    async def restore(self, row: dict, now_wall: float) -> Optional[VerificationSession]:
+        """Rebuild an in-flight session from a DB row after restart."""
+        try:
+            state = VState(row["state"])
+        except Exception:
+            return None
+        if state in (VState.COMPLETED, VState.REJECTED, VState.EXPIRED):
+            return None
+
+        remaining = float(row["expires_at"]) - now_wall
+        if remaining <= 0:
+            return None
+
+        sess = VerificationSession(
+            session_id=str(row["session_id"]),
+            guild_id=int(row["guild_id"]),
+            user_id=int(row["user_id"]),
+            state=state,
+            expires_at=time.monotonic() + remaining,
+            risk_score=int(row.get("risk_score") or 0),
+            risk_level=str(row.get("risk_level") or "LOW"),
+            confidence=float(row.get("confidence") or 0.0),
+            layer=int(row.get("layer") or 1),
+            assessment_id=int(row.get("assessment_id") or 0) or None,
+        )
+        async with self._lock:
+            self._sessions[sess.session_id] = sess
+            self._by_user[(sess.guild_id, sess.user_id)] = sess.session_id
+        return sess
+
     def snapshot_safe(self, sess: VerificationSession) -> str:
         return (
-            f"session={sess.session_id[:8]}... guild={sess.guild_id} user={sess.user_id} "
-            f"state={sess.state.value} layer={sess.layer} risk={sess.risk_score} conf={sess.confidence:.2f}"
+            "session=" + sess.session_id[:8] + "... guild=" + str(sess.guild_id) +
+            " user=" + str(sess.user_id) + " state=" + sess.state.value +
+            " layer=" + str(sess.layer) + " risk=" + str(sess.risk_score)
         )
