@@ -1,23 +1,68 @@
-# Discord Security Bot Template
+# Discord Security Bot
 
-A production-ready, modular, database-backed Discord security & management bot built with **Python 3.11+** and **discord.py 2.x**. Clone, rebrand, and configure for any community.
+A modular, database-backed Discord security and management bot for a single
+community server. Built with Python 3.11+ and discord.py 2.x.
+
+Includes advanced tickets, moderation, security systems, and a multi-signal
+verification and anti-alt engine that never stores user IPs.
+
+---
 
 ## Features
 
-- 🛡️ **Security** — Anti-Nuke, Anti-Raid, Anti-Spam, AutoMod, Server Watch
-- 🎫 **Advanced Tickets** — Panels, categories, transcripts, claiming, ratings-ready
-- 👋 **Welcome/Goodbye** with placeholders
-- 🔨 **Moderation** — Ban, kick, timeout, warn, purge, lock/unlock, and more
-- 📋 **Comprehensive Logging** — 6 independent log categories
-- 🚨 **Emergency Lockdown**
-- 🎛️ **Interactive /panel** — one command, dropdown-driven configuration
-- 💾 **SQLite (aiosqlite)** — persists across restarts, multi-guild safe
-- 🔐 **Centralized permission system**
+### Verification & anti-alt
+- Public verification panel with per-guild configuration
+- Risk-based routing across 5 verification layers
+- 40 detectors across Discord, Behavior, Roblox, Network, and Historical families
+- Correlation engine that scores independent signals — not just a checklist
+- Roblox account linking via public Roblox APIs (no credentials, no cookies)
+- Ban-evasion detection via avatar/name fingerprints
+- Account clustering for coordinated alt rings
+- Persistent moderator review panels that survive restarts
+- Queue command to see who's waiting for review
+- Every log passes through a redaction layer before it reaches Discord
+
+### Security
+- Anti-Nuke with audit-log-based executor attribution
+- Anti-Raid with join-velocity tracking and auto-lockdown
+- Anti-Spam with configurable thresholds and actions
+- AutoMod for invites, links, caps, repeats, and blacklisted words
+- Server Watch for continuous activity monitoring
+- Emergency lockdown and unlockdown
+
+### Moderation
+- Ban, kick, timeout, warn, purge, slowmode, lock, unlock
+- Hierarchy checks (bot and moderator cannot act above their top role)
+- Case logging for every action
+- Warning history per user
+
+### Tickets
+- Admin console with dropdown-driven category setup
+- Public panel with per-category routing
+- Claim, close, reopen, delete, rename, transcript
+- Auto-archive transcripts to a channel and DM to the opener
+- Optional rating prompt after close
+
+### Welcome, goodbye, logging
+- Welcome and goodbye messages with placeholder variables
+- Six independent log categories (moderation, messages, server, members, security, tickets)
+- Every log field redacted at the sink
+
+### Infrastructure
+- SQLite via aiosqlite — no external DB required
+- Central config via `/panel` — no memorizing arguments
+- Multi-guild safe (all queries scoped by `guild_id`) though designed for one server
+- Central permission system: `@is_guild_admin()` / `@is_moderator()`
+
+---
 
 ## Requirements
 
-- Python 3.11+
-- A Discord application with bot user (`Message Content`, `Server Members`, and `Moderation` intents enabled)
+- Python 3.11 or newer
+- A Discord application with a bot user
+- Bot intents: **Message Content**, **Server Members**, **Moderation**
+
+---
 
 ## Installation
 
@@ -25,102 +70,160 @@ A production-ready, modular, database-backed Discord security & management bot b
 git clone <your-repo-url>
 cd discord-security-bot
 python -m venv .venv
-source .venv/bin/activate    # Windows: .venv\Scripts\activate
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env
-# Edit .env and set DISCORD_TOKEN
-```
-
-## Running
-
-```bash
+# Edit .env and set DISCORD_TOKEN (and DEV_GUILD_ID while testing)
 python main.py
 ```
 
-Commands sync on startup. In a test server, register commands to a guild for instant sync (edit `setup_hook`).
+---
 
-## Environment Variables
+## Configuration
+
+### Environment variables
 
 | Variable | Purpose | Default |
 |---|---|---|
 | `DISCORD_TOKEN` | Bot token (**required**) | — |
+| `DEV_GUILD_ID` | Sync commands instantly to this guild (testing) | — |
 | `DATABASE_PATH` | SQLite file path | `data/bot.db` |
 | `BOT_NAME` | Bot username | `Security Bot` |
-| `BOT_STATUS` | online/idle/dnd/invisible | `online` |
-| `BOT_ACTIVITY_TYPE` | playing/listening/watching/streaming/competing | `watching` |
+| `BOT_STATUS` | online / idle / dnd / invisible | `online` |
+| `BOT_ACTIVITY_TYPE` | playing / listening / watching / competing / streaming | `watching` |
 | `BOT_ACTIVITY` | Activity text | `your server` |
-| `EMBED_COLOR` | Hex color for embeds | `0x5865F2` |
-| `EMBED_FOOTER` | Default footer | `Security Bot` |
-| `LOG_LEVEL` | Python log level | `INFO` |
+| `EMBED_COLOR` | Default embed color (hex) | `0x5865F2` |
+| `EMBED_FOOTER` | Default embed footer | `Security Bot` |
+| `LOG_LEVEL` | DEBUG / INFO / WARNING / ERROR | `INFO` |
+| `VERIFY_SESSION_TIMEOUT` | Verification session lifetime (seconds) | `900` |
 
-## Initial Setup
+### First-time setup
 
-1. Invite the bot with `bot` + `applications.commands` scopes and `Administrator` (recommended for anti-nuke).
+1. Invite the bot with the `bot` and `applications.commands` scopes.
 2. Run `/panel` in your server.
-3. Configure each system from the dropdowns (or dedicated `/xxx-config` commands).
-4. Run `/add-admin-role` and `/add-staff-role` to give your team access.
-5. Optionally run `/trust-user` on trusted administrators so anti-nuke never touches them.
+3. Configure each system from the dropdown.
+4. Set staff roles with `/add-staff-role` and admin roles with `/add-admin-role`.
+
+### Verification setup
+
+1. Create two roles: `@Verified` and `@Quarantine`, both below the bot's role.
+2. Set the log channel: `/logging-config category:security channel:#log_security`
+3. `/verification-role role:@Verified`
+4. `/verification-quarantine-role role:@Quarantine`
+5. `/verification-panel` in your verify channel.
+
+---
 
 ## Commands
 
-Use `/help` for an interactive menu. Highlights:
+Use `/help` for an interactive menu. Command groups:
 
-- `/panel` — central control center
-- `/security` — dashboard
-- `/antinuke`, `/antiraid`, `/antispam`, `/automod`, `/serverwatch` — status
-- `/lockdown`, `/unlockdown`
-- `/ban`, `/kick`, `/timeout`, `/warn`, `/purge`, `/lock`, `/unlock`, etc.
-- `/ticket-panel`, `/ticket-category-add`, `/tickets-config`
-- `/welcome-config`, `/logging-config`, `/security-config`
+- **Verification** — `/verify`, `/verification-panel`, `/verify-roblox`, `/verify-status`, `/verify-queue`, `/verify-review`, `/verify-false-positive`, plus config commands
+- **Security** — `/security`, `/antinuke`, `/antiraid`, `/antispam`, `/automod`, `/serverwatch`, `/lockdown`
+- **Moderation** — `/ban`, `/kick`, `/timeout`, `/warn`, `/purge`, `/lock`, `/unlock`, and more
+- **Tickets** — `/ticket-panel`, `/tickets-config`, `/ticket-claim`, `/ticket-close`, `/ticket-transcript`
+- **Utility** — `/ping`, `/botinfo`, `/userinfo`, `/roleinfo`, `/avatar`, `/help`
+- **Owner** — `/sync`, `/resync-global`
 
-All `*-config` commands either open a dropdown panel directly or point you at the equivalent `/panel` section.
+---
+
+## Verification system overview
+
+### Risk scoring
+
+Each detector produces evidence with severity and confidence. The risk engine:
+
+- Groups detectors into signal families (Discord, Behavior, Roblox, Network, Historical, Correlation)
+- Collapses duplicate evidence — VPN + Proxy + Datacenter count as one network observation
+- Caps each family's contribution so no single signal can dominate
+- Adds a correlation bonus when independent families fire together
+- Damps low-confidence results before scoring
+
+Result: a 0–100 risk score, a risk level (LOW / GUARDED / ELEVATED / HIGH / CRITICAL),
+and a required verification layer (1–5).
+
+### Detectors
+
+- **Discord** (10): account age, join age, username/display changes, avatar reuse, mutual servers, cluster patterns
+- **Behavior** (10): join bursts, verification bursts, rejoin patterns, ban evasion fingerprints
+- **Roblox** (8): account age, activity level, link history, cluster correlation
+- **Network** (8): VPN, proxy, Tor, datacenter, IP reputation — **UNAVAILABLE by default**
+- **Historical / Correlation** (4): server history, quarantine history, cross-family correlation, abuse signatures
+
+### Network layer is off by design
+
+Discord does not expose member IP addresses to bots. Obtaining them requires
+routing users through a browser OAuth flow — which this bot intentionally does
+not do. The 8 network detectors return `UNAVAILABLE` and contribute zero risk.
+This is correct behavior, not a bug.
+
+**This bot does not collect, store, or log IP addresses.**
+
+### Redaction
+
+Every log message and moderator panel passes through `RedactionManager` before
+display. IPv4, IPv6, bearer tokens, cookies, API keys, and long hex strings are
+scrubbed to `[REDACTED_*]` placeholders at the sink.
+
+---
 
 ## Database
 
-SQLite, using WAL. All queries parameterized. Migrations run on startup via `bot/database/migrations.py`.
+SQLite via aiosqlite, WAL mode. Migrations run automatically on startup.
 
-Tables: `guild_config`, `staff_roles`, `trusted_users`, `warnings`, `mod_actions`, `ticket_panels`, `ticket_categories`, `tickets`, `incidents`, `watch_events`, `ignore_channels`, `automod_words`, `ticket_ratings`.
+Base tables: `guild_config`, `staff_roles`, `trusted_users`, `warnings`,
+`mod_actions`, `ticket_panels`, `ticket_categories`, `tickets`, `incidents`,
+`watch_events`, `ignore_channels`, `automod_words`, `ticket_ratings`.
 
-## Permission Model
+Verification tables: `verification_sessions`, `verification_attempts`,
+`risk_assessments`, `roblox_links`, `network_events`, `account_history`,
+`account_clusters`, `manual_reviews`, `security_events`, `ban_history`,
+`abuse_signatures`, `pending_reviews`.
 
-- **Admin**: server owner, Administrator, Manage Guild, or a role marked `admin` via `/add-admin-role`.
-- **Staff/moderator**: admin, Moderate Members, Manage Messages, Kick/Ban, or a `staff` role.
+**Back up `data/bot.db` regularly.** It contains every ban record, warning,
+and verification assessment.
 
-Never duplicated — all checks go through `bot/core/checks.py`.
+---
 
-## Security Systems
+## Permission model
 
-- **Anti-Nuke** uses audit logs to attribute actions. Discord's API can lag; we only fire when a threshold is met within a short window.
-- **Anti-Raid** tracks join velocity in memory and evaluates account age.
-- **Anti-Spam** uses per-user sliding windows with anti-false-positive cooldowns.
-- **AutoMod** filters invites, links, caps, repeated chars, blacklisted words.
-- **Server Watch** logs and alerts on suspicious activity.
+Two centralized checks, used everywhere:
 
-## Documentation of Discord API limits
+- **`@is_guild_admin()`** — server owner, Administrator, Manage Guild, or a role
+  registered with `/add-admin-role`
+- **`@is_moderator()`** — above, or Moderate Members, Manage Messages, Kick, Ban,
+  or a role registered with `/add-staff-role`
 
-- Detecting "who deleted X" requires `View Audit Log`. If missing, anti-nuke logs the event but cannot punish.
-- Avatar pattern / username similarity detection is not reliably available via the API and is intentionally not faked.
-- Vanity URL changes are not exposed by Discord's API for most bots.
+Never duplicated. Never inline.
+
+---
 
 ## Development
 
 ```
 bot/
 ├── main.py / config.py
-├── core/          — bot class, checks, embeds, errors, paginator
-├── cogs/          — feature modules
-├── services/      — business logic
-├── views/         — UI components
-└── database/      — async sqlite
+├── core/          bot class, checks, embeds, errors, paginator
+├── cogs/          feature modules
+├── services/      business logic
+├── views/         UI components
+├── database/      async SQLite + base migrations
+└── verification/  40 detectors, engines, sessions, redaction
 ```
 
-Add a cog by dropping a file in `bot/cogs/` and appending it to `INITIAL_COGS` in `bot/core/bot.py`.
+Add a cog: drop a file in `bot/cogs/`, append to `INITIAL_COGS` in `bot/core/bot.py`.
 
-## Testing
+---
 
-```bash
-pytest
-```
+## Known limitations
+
+- **Network detection is disabled.** No IP collection. See above.
+- **Behavior tracker is in-memory.** Join-burst baselines reset on restart.
+- **Roblox public API can rate-limit** under heavy concurrent load.
+- **Review panels persist, but session state does not** across a hard restart
+  if the session was already in a terminal state.
+
+---
 
 ## License
 
