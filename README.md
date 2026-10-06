@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛡️ Discord Security Bot
+# 🛡️ Discord Moderation Bot
 
 **A modular, database-backed Discord security & community-management bot.**
 
