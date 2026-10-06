@@ -1,4 +1,4 @@
-"""The 40 detectors. Every detector implements the same contract.
+"""The 45 detectors. Every detector implements the same contract.
 
 A detector NEVER decides the verdict. It produces evidence; the RiskEngine decides.
 UNKNOWN / UNAVAILABLE / ERROR never increase risk.
@@ -577,8 +577,7 @@ class D28RobloxClusterCorrelation(Detector):
 
 
 # ---------------------------------------------------------------------------
-# NETWORK (29-36)
-# These are UNAVAILABLE unless a NetworkProvider is configured.
+# NETWORK (29-36) - UNAVAILABLE by default (no IP collection)
 # ---------------------------------------------------------------------------
 class _NetBase(Detector):
     family = Family.NETWORK
@@ -791,6 +790,198 @@ class D40KnownAbusePattern(Detector):
 
 
 # ---------------------------------------------------------------------------
+# EXTENDED SIGNALS (41-45) - Discord-native, no IP required
+# ---------------------------------------------------------------------------
+class D41PublicFlags(Detector):
+    """Trust signal: Discord public badges. Early Supporter is impossible to fake."""
+    id = "DISCORD_PUBLIC_FLAGS"
+    family = Family.DISCORD
+    evidence_type = "public_flags"
+    default_weight = 1.0
+
+    async def evaluate(self, ctx: DetectorContext) -> DResult:
+        flags = getattr(ctx.member, "public_flags", None)
+        if flags is None:
+            return self._unavailable("Public flags unavailable")
+
+        strong = []
+        if getattr(flags, "early_supporter", False):
+            strong.append("Early Supporter")
+        if getattr(flags, "active_developer", False):
+            strong.append("Active Developer")
+        if getattr(flags, "verified_developer", False) or getattr(flags, "early_verified_bot_developer", False):
+            strong.append("Verified Developer")
+        if getattr(flags, "discord_certified_moderator", False):
+            strong.append("Certified Moderator")
+        if getattr(flags, "staff", False):
+            strong.append("Discord Staff")
+        if getattr(flags, "partner", False):
+            strong.append("Partner")
+        if getattr(flags, "bug_hunter_level_2", False) or getattr(flags, "bug_hunter", False):
+            strong.append("Bug Hunter")
+
+        if strong:
+            label = "Verified signal(s): " + ", ".join(strong)
+            return DResult(
+                detector=self.id,
+                status=DStatus.TRIGGERED,
+                triggered=True,
+                severity=-0.55,
+                confidence=0.95,
+                score_contribution=-0.55 * 0.95,
+                evidence_type=self.evidence_type,
+                signal_family=self.family,
+                safe_reason=label,
+                weight=self.default_weight,
+            )
+        return self._ok(False, 0.0, 0.7, "No trust badges on this account")
+
+
+class D42SnowflakePrecision(Detector):
+    """Hour-precise account age. Distinguishes 'made this morning' from 'made yesterday'."""
+    id = "SNOWFLAKE_PRECISION"
+    family = Family.DISCORD
+    evidence_type = "account_age_hours"
+    default_weight = 1.0
+
+    async def evaluate(self, ctx: DetectorContext) -> DResult:
+        created = ctx.member.created_at
+        if created is None:
+            return self._unavailable("Account creation time unavailable")
+        now = datetime.now(timezone.utc)
+        hours = (now - created).total_seconds() / 3600.0
+        if hours < 1:
+            return self._ok(True, 0.90, 0.99,
+                            "Discord account created less than 1 hour ago")
+        if hours < 6:
+            return self._ok(True, 0.65, 0.95,
+                            "Discord account created less than 6 hours ago")
+        if hours < 24:
+            return self._ok(True, 0.40, 0.90,
+                            "Discord account created less than 24 hours ago")
+        return self._ok(False, 0.0, 0.85, "Account older than 24 hours")
+
+
+def _levenshtein(a: str, b: str, max_dist: int = 5) -> int:
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > max_dist:
+        return max_dist + 1
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        if i > max_dist:
+            return max_dist + 1
+        curr = [i]
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            curr.append(min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost))
+        prev = curr
+    return prev[-1]
+
+
+class D43UsernamePatternCluster(Detector):
+    """Detects genesis1 / genesis2 / g_enesis patterns against recent joins."""
+    id = "USERNAME_PATTERN_CLUSTER"
+    family = Family.BEHAVIOR
+    evidence_type = "username_similarity"
+    default_weight = 1.4
+
+    async def evaluate(self, ctx: DetectorContext) -> DResult:
+        name = (ctx.member.name or "").lower().strip()
+        if len(name) < 4:
+            return self._ok(False, 0.0, 0.6, "Username too short for similarity analysis")
+
+        recent = ctx.history.get("recent_usernames") or []
+        if not recent:
+            return self._unknown("No recent usernames to compare against")
+
+        matches = 0
+        for other_name, other_id in recent:
+            if int(other_id) == ctx.member.id:
+                continue
+            other = str(other_name).lower().strip()
+            if len(other) < 4:
+                continue
+            dist = _levenshtein(name, other, max_dist=2)
+            if 1 <= dist <= 2:
+                matches += 1
+
+        if matches >= 3:
+            return self._ok(True, 0.75, 0.80,
+                            "Username similar to " + str(matches) + " recently-joined accounts")
+        if matches >= 2:
+            return self._ok(True, 0.50, 0.75,
+                            "Username similar to " + str(matches) + " recently-joined accounts")
+        if matches == 1:
+            return self._ok(True, 0.20, 0.65,
+                            "Username similar to 1 recently-joined account")
+        return self._ok(False, 0.0, 0.70, "No username pattern matches")
+
+
+class D44VerificationLatencyDelta(Detector):
+    """Time between join and verify click. Bots click in seconds."""
+    id = "VERIFICATION_LATENCY_DELTA"
+    family = Family.BEHAVIOR
+    evidence_type = "verification_timing"
+    default_weight = 0.9
+
+    async def evaluate(self, ctx: DetectorContext) -> DResult:
+        if ctx.member.joined_at is None:
+            return self._unavailable("Join time unavailable")
+        now = datetime.now(timezone.utc)
+        seconds_since_join = (now - ctx.member.joined_at).total_seconds()
+        if seconds_since_join < 3:
+            return self._ok(True, 0.70, 0.80,
+                            "Clicked verify less than 3 seconds after joining")
+        if seconds_since_join < 15:
+            return self._ok(True, 0.40, 0.75,
+                            "Clicked verify less than 15 seconds after joining")
+        if seconds_since_join < 60:
+            return self._ok(True, 0.15, 0.70,
+                            "Clicked verify less than a minute after joining")
+        return self._ok(False, 0.0, 0.75, "Organic verify timing")
+
+
+class D45CrossAccountAgeDelta(Detector):
+    """Discord + Roblox created within hours of each other = coordinated creation."""
+    id = "CROSS_ACCOUNT_AGE_DELTA"
+    family = Family.CORRELATION
+    evidence_type = "cross_age_delta"
+    default_weight = 1.6
+
+    async def evaluate(self, ctx: DetectorContext) -> DResult:
+        if ctx.roblox is None or not ctx.roblox.available or not ctx.roblox.created_at:
+            return self._unavailable("Roblox account not linked or creation date unknown")
+        try:
+            roblox_created = datetime.fromisoformat(str(ctx.roblox.created_at).replace("Z", "+00:00"))
+            if roblox_created.tzinfo is None:
+                roblox_created = roblox_created.replace(tzinfo=timezone.utc)
+        except Exception:
+            return self._unknown("Could not parse Roblox creation date")
+
+        discord_created = ctx.member.created_at
+        if discord_created is None:
+            return self._unavailable("Discord creation date unavailable")
+
+        delta_hours = abs((discord_created - roblox_created).total_seconds()) / 3600.0
+
+        if delta_hours < 1:
+            return self._ok(True, 0.90, 0.90,
+                            "Discord and Roblox accounts created less than 1 hour apart")
+        if delta_hours < 6:
+            return self._ok(True, 0.70, 0.85,
+                            "Discord and Roblox accounts created less than 6 hours apart")
+        if delta_hours < 24:
+            return self._ok(True, 0.45, 0.80,
+                            "Discord and Roblox accounts created less than 24 hours apart")
+        return self._ok(False, 0.0, 0.80, "Account creation dates are independent")
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 ALL_DETECTORS: list[Detector] = [
@@ -807,6 +998,8 @@ ALL_DETECTORS: list[Detector] = [
     D34NetworkRiskScore(), D35IpVerificationVelocity(), D36InfrastructureCluster(),
     D37PreviousServerHistory(), D38PreviousVerificationHistory(), D39CrossSignalCorrelation(),
     D40KnownAbusePattern(),
+    D41PublicFlags(), D42SnowflakePrecision(), D43UsernamePatternCluster(),
+    D44VerificationLatencyDelta(), D45CrossAccountAgeDelta(),
 ]
 
 
