@@ -17,6 +17,7 @@ from bot.verification.detectors import (
     DetectorContext, DetectorRegistry, DResult, DStatus, Family,
 )
 from bot.verification.engines import ClusterEngine, HistoricalEngine
+from bot.verification.behavioral import BehavioralTracker, SessionCorrelator
 from bot.verification.providers import (
     NetworkProvider, NullNetworkProvider, PublicRobloxProvider, RobloxProvider,
 )
@@ -167,6 +168,10 @@ class VerificationService:
         self._cluster_fingerprint_index: dict = {}
         self._cluster_fingerprint_rarity: dict = {}
 
+        # Behavioural tracking (presence / voice / activity events)
+        self.behavioral = BehavioralTracker(db)
+        self.correlator = SessionCorrelator(db)
+
         # Raid mode state (per-guild). Reset on restart.
         self._raid_mode: dict = {}
 
@@ -212,6 +217,21 @@ class VerificationService:
 
     def on_role_add(self, guild_id: int, user_id: int) -> None:
         self.behavior.record_role_add(guild_id, user_id)
+
+    async def on_presence_update(self, before: discord.Member, after: discord.Member) -> None:
+        try:
+            await self.behavioral.record_presence(after, before.status, after.status)
+            await self.behavioral.record_activities(after, before.activities, after.activities)
+        except Exception:
+            pass
+
+    async def on_voice_state_update(self, member: discord.Member,
+                                    before: discord.VoiceState,
+                                    after: discord.VoiceState) -> None:
+        try:
+            await self.behavioral.record_voice(member, before.channel, after.channel)
+        except Exception:
+            pass
 
     # ---- boot-time rebuild ----
     async def rebuild_fingerprint_index(self, guild_id: int) -> None:
@@ -263,6 +283,13 @@ class VerificationService:
                 await self.repo.set_history(member.guild.id, member.id, "name_hash", nh)
         except Exception:
             pass
+
+    # ---- retention cleanup ----
+    async def cleanup_old_behavioral_events(self) -> int:
+        try:
+            return await self.behavioral.cleanup_old_events()
+        except Exception:
+            return 0
 
     # ---- main assess ----
     async def assess(self, member: discord.Member, session_id: str,
@@ -451,7 +478,25 @@ class VerificationService:
         hist["user_recent_role_adds"] = self.behavior.user_role_adds_last_1h(gid, uid)
         hist["raid_mode_active"] = self.is_raid_active(gid)
 
-        # Recent usernames for pattern-cluster detection (last 100 joins in this guild)
+        # Behavioural correlation - Phase 1 detectors 46-49
+        try:
+            hist["presence_correlation"] = await self.correlator.presence_correlation(gid, uid)
+        except Exception:
+            hist["presence_correlation"] = None
+        try:
+            hist["voice_correlation"] = await self.correlator.voice_correlation(gid, uid)
+        except Exception:
+            hist["voice_correlation"] = None
+        try:
+            hist["session_cluster"] = await self.correlator.session_cluster(gid, uid)
+        except Exception:
+            hist["session_cluster"] = None
+        try:
+            hist["activity_overlap"] = await self.correlator.activity_overlap(gid, uid)
+        except Exception:
+            hist["activity_overlap"] = None
+
+        # Recent usernames for pattern-cluster detection
         try:
             rows = await self.db.fetchall(
                 """SELECT user_id, value FROM account_history
