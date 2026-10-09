@@ -93,13 +93,20 @@ class RobloxLinkModal(discord.ui.Modal):
 
 
 class VerifyPanelView(discord.ui.View):
+    """Persistent public verification panel.
+
+    Note: discord.py dispatches all clicks on this custom_id to ONE instance
+    of this view, so instance-level state is effectively a singleton.
+    We use that for a per-user in-flight guard.
+    """
+
     def __init__(self) -> None:
         super().__init__(timeout=None)
+        self._in_flight: set = set()
 
     @discord.ui.button(label="Start Verification", style=discord.ButtonStyle.success,
                        custom_id="verify:start")
     async def start(self, interaction: discord.Interaction, _b: discord.ui.Button):
-        # --- Fast checks before ack (these can respond directly) ---
         if interaction.guild_id is None:
             return await interaction.response.send_message("Server only.", ephemeral=True)
 
@@ -112,49 +119,67 @@ class VerifyPanelView(discord.ui.View):
         try:
             await interaction.response.defer(ephemeral=True)
         except Exception:
-            return  # already acked or interaction dead; nothing we can do
+            return
 
-        # --- Guard against double-clicks while a verify is mid-flight ---
+        # --- In-flight guard (atomic - no await between check and add) ---
+        key = (interaction.guild_id, interaction.user.id)
+        if key in self._in_flight:
+            return await interaction.followup.send(
+                "You already have a verification in progress. Please wait.",
+                ephemeral=True,
+            )
+        self._in_flight.add(key)
+
         try:
-            existing = await svc.sessions.get_active_for_user(
-                interaction.guild_id, interaction.user.id)
-            if existing is not None and existing.state in (
-                VState.SECURITY_CHECK, VState.CHALLENGE_ACTIVE
-            ):
+            # --- Existing session check ---
+            try:
+                existing = await svc.sessions.get_active_for_user(
+                    interaction.guild_id, interaction.user.id)
+            except Exception:
+                existing = None
+
+            if existing is not None:
+                st = existing.state
+                if st == VState.CHALLENGE_REQUIRED:
+                    return await interaction.followup.send(
+                        "You're already in enhanced verification. "
+                        "Please open a support ticket and mention this message.",
+                        ephemeral=True,
+                    )
+                if st in (VState.SECURITY_CHECK, VState.CHALLENGE_ACTIVE):
+                    return await interaction.followup.send(
+                        "You already have a verification in progress. Please wait for it to finish.",
+                        ephemeral=True,
+                    )
+
+            # --- Create session ---
+            try:
+                sess = await svc.create_session(interaction.guild_id, interaction.user.id)
+            except Exception as exc:
+                _log_internal_error(svc, interaction, "create_session", exc)
                 return await interaction.followup.send(
-                    "You already have a verification in progress. Please wait for it to finish.",
+                    "Verification service is temporarily unavailable. Please try again shortly.",
                     ephemeral=True,
                 )
-        except Exception:
-            pass
+            if sess is None:
+                return await interaction.followup.send(
+                    "You are doing that too quickly. Please wait a moment.", ephemeral=True)
 
-        # --- Create session ---
-        try:
-            sess = await svc.create_session(interaction.guild_id, interaction.user.id)
-        except Exception as exc:
-            _log_internal_error(svc, interaction, "create_session", exc)
-            return await interaction.followup.send(
-                "Verification service is temporarily unavailable. Please try again shortly.",
-                ephemeral=True,
-            )
+            # --- Run verification ---
+            try:
+                verdict = await svc.verify(
+                    interaction.guild_id, interaction.user.id, sess.session_id)
+            except Exception as exc:
+                _log_internal_error(svc, interaction, "verify", exc)
+                return await interaction.followup.send(
+                    "Verification service is temporarily unavailable. Please try again shortly.",
+                    ephemeral=True,
+                )
 
-        if sess is None:
-            return await interaction.followup.send(
-                "You are doing that too quickly. Please wait a moment.", ephemeral=True)
-
-        # --- Run verification ---
-        try:
-            verdict = await svc.verify(
-                interaction.guild_id, interaction.user.id, sess.session_id)
-        except Exception as exc:
-            _log_internal_error(svc, interaction, "verify", exc)
-            return await interaction.followup.send(
-                "Verification service is temporarily unavailable. Please try again shortly.",
-                ephemeral=True,
-            )
-
-        # --- Finish (bulletproof) ---
-        await _finish(interaction, svc, sess.session_id, verdict)
+            # --- Finish ---
+            await _finish(interaction, svc, sess.session_id, verdict)
+        finally:
+            self._in_flight.discard(key)
 
     @discord.ui.button(label="Link Roblox", style=discord.ButtonStyle.primary,
                        custom_id="verify:roblox")
@@ -172,7 +197,7 @@ class VerifyPanelView(discord.ui.View):
 
 
 # ---------------------------------------------------------------------------
-# Completion - outer wrapper that never lets an exception become silence
+# Completion
 # ---------------------------------------------------------------------------
 async def _finish(interaction: discord.Interaction, svc: VerificationService,
                   session_id: str, verdict) -> None:
@@ -251,27 +276,27 @@ async def _finish_inner(interaction: discord.Interaction, svc: VerificationServi
         except Exception:
             pass
 
-        role_state = "no role configured"
+        role_state = "not configured"
         if verif_role is None:
             log.warning(
                 "Verification passed for user=%s in guild=%s but no verified role is configured.",
                 member.id, gid,
             )
-        elif verif_role not in member.roles:
+        elif verif_role in member.roles:
+            role_state = "already had role"
+        else:
             try:
                 await member.add_roles(verif_role, reason="Verification passed")
                 role_state = "role granted"
             except discord.Forbidden:
-                role_state = "role grant FAILED (Forbidden - check bot role hierarchy)"
+                role_state = "grant failed (bot role hierarchy)"
                 log.error(
                     "Cannot grant verified role to %s: bot lacks permission (role hierarchy).",
                     member.id,
                 )
             except discord.HTTPException as exc:
-                role_state = "role grant FAILED (" + str(exc)[:80] + ")"
+                role_state = "grant failed (" + str(exc)[:80] + ")"
                 log.error("add_roles failed: %s", exc)
-        else:
-            role_state = "already had role"
 
         try:
             await svc.repo.record_attempt(gid, member.id, session_id, "PASSED", sess.layer)
@@ -292,9 +317,16 @@ async def _finish_inner(interaction: discord.Interaction, svc: VerificationServi
         except Exception as exc:
             log.warning("Failed to emit verification-passed log: %s", rex(exc))
 
-        user_msg = ("You now have access. Welcome aboard."
-                    if verif_role is not None and role_state == "role granted"
-                    else "You've been verified. A moderator will assign your role shortly.")
+        if role_state == "role granted":
+            user_msg = "You now have access. Welcome aboard."
+        elif role_state == "already had role":
+            user_msg = "You're already verified. Welcome back."
+        elif role_state == "not configured":
+            user_msg = ("You've been verified, but no verified role is configured yet. "
+                        "Please contact a moderator.")
+        else:
+            user_msg = ("You've been verified. A moderator will assign your role shortly.")
+
         try:
             await interaction.followup.send(
                 embed=discord.Embed(title="Verified", description=user_msg, color=0x57F287),
@@ -504,16 +536,14 @@ class ReviewView(discord.ui.View):
         except discord.HTTPException:
             try:
                 await interaction.response.send_message(
-                    "Decision recorded: " +:
- decision, ephemeral=True)
+                    "Decision recorded: " + decision, ephemeral=True)
             except Exception:
                 pass
 
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.success,
                        custom_id="verify_review:approve")
-               async def approve(self, interaction: return discord.Interaction, _b: discord.ui.Button):
-
-        await self._apply(interaction, "APPRO       VE", remove_quarantine=True, add_ pendingverified=True)
+    async def approve(self, interaction: discord.Interaction, _b: discord.ui.Button):
+        await self._apply(interaction, "APPROVE", remove_quarantine=True, add_verified=True)
 
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger,
                        custom_id="verify_review:reject")
@@ -573,7 +603,9 @@ class ReviewView(discord.ui.View):
     async def history(self, interaction: discord.Interaction, _b: discord.ui.Button):
         svc: VerificationService = interaction.client.verification  # type: ignore[attr-defined]
         guild = interaction.guild
-        if guild is None = await self._load_pending(interaction)
+        if guild is None:
+            return
+        pending = await self._load_pending(interaction)
         if pending is None:
             return await interaction.response.send_message(
                 "This review panel has expired.", ephemeral=True)
