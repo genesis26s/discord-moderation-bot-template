@@ -11,9 +11,9 @@ from bot.services.logging_service import LoggingService
 
 
 class TicketService:
-    def __init__(self, db: Database, logging: LoggingService) -> None:
+    def __init__(self, db: Database, logging_svc: LoggingService) -> None:
         self.db = db
-        self.logging = logging
+        self.logging = logging_svc
 
     async def create_ticket_record(
         self,
@@ -27,7 +27,8 @@ class TicketService:
             INSERT INTO tickets (guild_id, channel_id, category_id, user_id, status, created_at)
             VALUES (?, ?, ?, ?, 'open', ?)
             """,
-            (guild_id, channel_id, category_id, user_id, int(datetime.now(timezone.utc).timestamp())),
+            (guild_id, channel_id, category_id, user_id,
+             int(datetime.now(timezone.utc).timestamp())),
         )
         row = await self.db.fetchone("SELECT last_insert_rowid() AS id")
         return int(row["id"]) if row else 0
@@ -51,18 +52,46 @@ class TicketService:
     async def delete_ticket(self, channel_id: int) -> None:
         await self.db.execute("DELETE FROM tickets WHERE channel_id = ?", (channel_id,))
 
-    async def count_open(self, guild_id: int, user_id: int) -> int:
-        row = await self.db.fetchone(
-            "SELECT COUNT(*) AS c FROM tickets WHERE guild_id = ? AND user_id = ? AND status = 'open'",
+    async def count_open(self, guild_id: int, user_id: int, guild=None) -> int:
+        """Count open tickets for a user.
+
+        If `guild` is provided, orphaned records (whose channels no longer exist)
+        are auto-closed so they never block the user from opening a new ticket.
+        """
+        rows = await self.db.fetchall(
+            "SELECT channel_id FROM tickets WHERE guild_id = ? AND user_id = ? AND status = 'open'",
             (guild_id, user_id),
         )
-        return int(row["c"]) if row else 0
+        if not rows:
+            return 0
+        if guild is None:
+            return len(rows)
 
-    async def find_category(self, guild_id: int, panel_id: int, name: str):
-        return await self.db.fetchone(
-            "SELECT * FROM ticket_categories WHERE guild_id = ? AND panel_id = ? AND name = ?",
-            (guild_id, panel_id, name),
-        )
+        live = 0
+        orphans: list[int] = []
+        for r in rows:
+            try:
+                cid = int(r["channel_id"])
+            except (TypeError, ValueError):
+                continue
+            if guild.get_channel(cid) is None:
+                orphans.append(cid)
+            else:
+                live += 1
+
+        # Auto-close orphaned records
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        for cid in orphans:
+            try:
+                await self.db.execute(
+                    "UPDATE tickets SET status = 'closed', closed_at = ? "
+                    "WHERE channel_id = ? AND status = 'open'",
+                    (now_ts, cid),
+                )
+            except Exception:
+                pass
+
+        return live
 
     async def list_panels(self, guild_id: int):
         return await self.db.fetchall(
