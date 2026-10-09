@@ -17,6 +17,9 @@ HELP_SECTIONS = {
         "/verify-queue - List members pending manual review",
         "/verify-review - Open the review panel for a member",
         "/verify-false-positive - Mark an assessment as a false positive",
+        "/verify-raid-mode - Activate / deactivate raid mode",
+        "/verify-set-raid-channel - Set the raid alert channel",
+        "/verify-stats - Show verification statistics",
         "/verification-config - Show verification configuration",
         "/verification-role - Set the role given on success",
         "/verification-quarantine-role - Set the quarantine role",
@@ -65,6 +68,7 @@ HELP_SECTIONS = {
     ],
     "Server & Utility": [
         "/panel - Central control center",
+        "/embed - Post or edit a custom embed",
         "/server, /serverinfo, /membercount",
         "/roles, /channels, /config",
         "/avatar, /userinfo, /servericon",
