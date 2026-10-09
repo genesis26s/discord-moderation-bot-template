@@ -1,4 +1,4 @@
-"""The 44 active detectors (plus one disabled). Every detector implements the same contract.
+"""The 49 active detectors. Every detector implements the same contract.
 
 A detector NEVER decides the verdict. It produces evidence; the RiskEngine decides.
 UNKNOWN / UNAVAILABLE / ERROR never increase risk.
@@ -332,15 +332,12 @@ class D13RepeatedVerificationFailure(Detector):
 # ---------------------------------------------------------------------------
 # D14 REMOVED FROM REGISTRY - semantically broken in this architecture.
 # The class is retained below for reference only. Do not register it.
-# In a Discord-interaction verification flow, session_started_at and
-# assess() execution happen microseconds apart, so it fired on 100% of
-# verifications and pushed everyone into GUARDED.
 # ---------------------------------------------------------------------------
 class D14UnusualVerificationSpeed(Detector):
     id = "UNUSUAL_VERIFICATION_SPEED"
     family = Family.BEHAVIOR
     evidence_type = "verification_timing"
-    default_weight = 0.0  # effectively disabled
+    default_weight = 0.0
 
     async def evaluate(self, ctx: DetectorContext) -> DResult:
         return self._unavailable("Disabled: not meaningful in interaction-based verification flow")
@@ -842,7 +839,7 @@ class D41PublicFlags(Detector):
 
 
 class D42SnowflakePrecision(Detector):
-    """Hour-precise account age. Distinguishes 'made this morning' from 'made yesterday'."""
+    """Hour-precise account age."""
     id = "SNOWFLAKE_PRECISION"
     family = Family.DISCORD
     evidence_type = "account_age_hours"
@@ -951,7 +948,7 @@ class D44VerificationLatencyDelta(Detector):
 
 
 class D45CrossAccountAgeDelta(Detector):
-    """Discord + Roblox created within hours of each other = coordinated creation."""
+    """Discord + Roblox created within hours of each other."""
     id = "CROSS_ACCOUNT_AGE_DELTA"
     family = Family.CORRELATION
     evidence_type = "cross_age_delta"
@@ -986,10 +983,147 @@ class D45CrossAccountAgeDelta(Detector):
 
 
 # ---------------------------------------------------------------------------
+# PHASE-1 BEHAVIOURAL CORRELATION (46-50)
+# Based on Discord-native signals: presence, voice, activity, session timing.
+# No IPs. No content. No external APIs.
+# ---------------------------------------------------------------------------
+class D46PresenceTimelineCorrelation(Detector):
+    id = "PRESENCE_TIMELINE_CORRELATION"
+    family = Family.BEHAVIOR
+    evidence_type = "presence_correlation"
+    default_weight = 1.5
+
+    async def evaluate(self, ctx: DetectorContext) -> DResult:
+        corr = ctx.history.get("presence_correlation")
+        if corr is None:
+            return self._unknown("No presence correlation data available yet")
+        try:
+            score = float(corr.get("score", 0.0))
+        except Exception:
+            return self._unknown("Malformed presence correlation data")
+        if score >= 0.9:
+            return self._ok(True, 0.85, 0.85,
+                            "Presence timeline strongly correlates with another account")
+        if score >= 0.75:
+            return self._ok(True, 0.55, 0.75,
+                            "Presence timeline matches another account")
+        if score >= 0.6:
+            return self._ok(True, 0.30, 0.65,
+                            "Presence timeline partially matches another account")
+        return self._ok(False, 0.0, 0.7, "No presence correlation")
+
+
+class D47VoiceCoOccurrence(Detector):
+    id = "VOICE_CO_OCCURRENCE"
+    family = Family.BEHAVIOR
+    evidence_type = "voice_correlation"
+    default_weight = 1.4
+
+    async def evaluate(self, ctx: DetectorContext) -> DResult:
+        corr = ctx.history.get("voice_correlation")
+        if corr is None:
+            return self._unknown("No voice correlation data available yet")
+        try:
+            score = float(corr.get("score", 0.0))
+        except Exception:
+            return self._unknown("Malformed voice correlation data")
+        if score >= 0.9:
+            return self._ok(True, 0.75, 0.80,
+                            "Voice channel usage matches another account")
+        if score >= 0.6:
+            return self._ok(True, 0.45, 0.70,
+                            "Voice channel usage partially matches another account")
+        if score >= 0.5:
+            return self._ok(True, 0.20, 0.60,
+                            "Voice channel usage shares a channel with another account")
+        return self._ok(False, 0.0, 0.65, "No voice correlation")
+
+
+class D48SessionClustering(Detector):
+    id = "SESSION_CLUSTERING"
+    family = Family.BEHAVIOR
+    evidence_type = "session_clustering"
+    default_weight = 1.4
+
+    async def evaluate(self, ctx: DetectorContext) -> DResult:
+        cluster = ctx.history.get("session_cluster")
+        if cluster is None:
+            return self._unknown("No session clustering data available yet")
+        try:
+            days = int(cluster.get("days", 0))
+        except Exception:
+            return self._unknown("Malformed session clustering data")
+        if days >= 7:
+            return self._ok(True, 0.80, 0.90,
+                            "Login timing matches another account on " + str(days) + " separate days")
+        if days >= 5:
+            return self._ok(True, 0.55, 0.85,
+                            "Login timing matches another account on " + str(days) + " separate days")
+        if days >= 3:
+            return self._ok(True, 0.30, 0.75,
+                            "Login timing matches another account on " + str(days) + " separate days")
+        return self._ok(False, 0.0, 0.7, "No login timing correlation")
+
+
+class D49ActivityNameOverlap(Detector):
+    id = "ACTIVITY_NAME_OVERLAP"
+    family = Family.BEHAVIOR
+    evidence_type = "activity_overlap"
+    default_weight = 1.0
+
+    async def evaluate(self, ctx: DetectorContext) -> DResult:
+        overlap = ctx.history.get("activity_overlap")
+        if overlap is None:
+            return self._unknown("No activity overlap data available yet")
+        try:
+            score = float(overlap.get("score", 0.0))
+            shared = overlap.get("shared") or []
+        except Exception:
+            return self._unknown("Malformed activity overlap data")
+        if score >= 0.9:
+            return self._ok(True, 0.60, 0.70,
+                            "Shares multiple niche activities with another account: " + ", ".join(shared[:3]))
+        if score >= 0.5:
+            return self._ok(True, 0.35, 0.60,
+                            "Shares a niche activity with another account: " + ", ".join(shared[:3]))
+        return self._ok(False, 0.0, 0.6, "No activity overlap")
+
+
+class D50CrossAccountAgeWide(Detector):
+    id = "CROSS_ACCOUNT_AGE_WIDE"
+    family = Family.CORRELATION
+    evidence_type = "cross_age_delta_wide"
+    default_weight = 1.0
+
+    async def evaluate(self, ctx: DetectorContext) -> DResult:
+        if ctx.roblox is None or not ctx.roblox.available or not ctx.roblox.created_at:
+            return self._unavailable("Roblox account not linked or creation date unknown")
+        try:
+            roblox_created = datetime.fromisoformat(str(ctx.roblox.created_at).replace("Z", "+00:00"))
+            if roblox_created.tzinfo is None:
+                roblox_created = roblox_created.replace(tzinfo=timezone.utc)
+        except Exception:
+            return self._unknown("Could not parse Roblox creation date")
+        discord_created = ctx.member.created_at
+        if discord_created is None:
+            return self._unavailable("Discord creation date unavailable")
+        delta_days = abs((discord_created - roblox_created).total_seconds()) / 86400.0
+        if delta_days < 1:
+            return self._ok(False, 0.0, 0.7, "Covered by narrower detector")
+        if delta_days <= 7:
+            return self._ok(True, 0.40, 0.75,
+                            "Discord and Roblox accounts created within the same week")
+        if delta_days <= 14:
+            return self._ok(True, 0.20, 0.70,
+                            "Discord and Roblox accounts created within the same fortnight")
+        return self._ok(False, 0.0, 0.75, "Account creation dates are distant")
+
+
+# ---------------------------------------------------------------------------
 # Registry
 #
 # D14UnusualVerificationSpeed is NOT registered. See the class definition
-# above for the reason. Total active detectors: 44.
+# above for the reason. Total active detectors: 49.
 # ---------------------------------------------------------------------------
 ALL_DETECTORS: list[Detector] = [
     D01AccountAge(), D02UnusuallyNew(), D03ServerJoinAge(), D04RecentUsernameChange(),
@@ -1007,6 +1141,8 @@ ALL_DETECTORS: list[Detector] = [
     D40KnownAbusePattern(),
     D41PublicFlags(), D42SnowflakePrecision(), D43UsernamePatternCluster(),
     D44VerificationLatencyDelta(), D45CrossAccountAgeDelta(),
+    D46PresenceTimelineCorrelation(), D47VoiceCoOccurrence(), D48SessionClustering(),
+    D49ActivityNameOverlap(), D50CrossAccountAgeWide(),
 ]
 
 
