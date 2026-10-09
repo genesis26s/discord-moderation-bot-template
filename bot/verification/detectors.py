@@ -1,4 +1,4 @@
-"""The 45 detectors. Every detector implements the same contract.
+"""The 44 active detectors (plus one disabled). Every detector implements the same contract.
 
 A detector NEVER decides the verdict. It produces evidence; the RiskEngine decides.
 UNKNOWN / UNAVAILABLE / ERROR never increase risk.
@@ -329,17 +329,21 @@ class D13RepeatedVerificationFailure(Detector):
         return self._ok(False, 0.0, 0.85, "No repeated failures")
 
 
+# ---------------------------------------------------------------------------
+# D14 REMOVED FROM REGISTRY - semantically broken in this architecture.
+# The class is retained below for reference only. Do not register it.
+# In a Discord-interaction verification flow, session_started_at and
+# assess() execution happen microseconds apart, so it fired on 100% of
+# verifications and pushed everyone into GUARDED.
+# ---------------------------------------------------------------------------
 class D14UnusualVerificationSpeed(Detector):
     id = "UNUSUAL_VERIFICATION_SPEED"
     family = Family.BEHAVIOR
     evidence_type = "verification_timing"
-    default_weight = 0.8
+    default_weight = 0.0  # effectively disabled
 
     async def evaluate(self, ctx: DetectorContext) -> DResult:
-        elapsed = time.monotonic() - ctx.session_started_at
-        if elapsed < 1.5:
-            return self._ok(True, 0.35, 0.75, "Verification completed suspiciously fast")
-        return self._ok(False, 0.0, 0.8, "Verification timing normal")
+        return self._unavailable("Disabled: not meaningful in interaction-based verification flow")
 
 
 class D15UnusualVerificationDelay(Detector):
@@ -983,12 +987,15 @@ class D45CrossAccountAgeDelta(Detector):
 
 # ---------------------------------------------------------------------------
 # Registry
+#
+# D14UnusualVerificationSpeed is NOT registered. See the class definition
+# above for the reason. Total active detectors: 44.
 # ---------------------------------------------------------------------------
 ALL_DETECTORS: list[Detector] = [
     D01AccountAge(), D02UnusuallyNew(), D03ServerJoinAge(), D04RecentUsernameChange(),
     D05RecentDisplayNameChange(), D06AvatarReuse(), D07LowProfileActivity(), D08MutualServerPattern(),
     D09KnownBadAccountCorrelation(), D10AccountClusterPattern(),
-    D11JoinBurst(), D12VerificationBurst(), D13RepeatedVerificationFailure(), D14UnusualVerificationSpeed(),
+    D11JoinBurst(), D12VerificationBurst(), D13RepeatedVerificationFailure(),
     D15UnusualVerificationDelay(), D16NewAccountJoinWave(), D17PostJoinBehavior(),
     D18RoleEscalationPattern(), D19RejoinPattern(), D20BanEvasionPattern(),
     D21RobloxAccountAge(), D22RobloxActivityLevel(), D23RobloxAccountReuse(),
