@@ -82,6 +82,36 @@ SCHEMA: list[str] = [
         created_at INTEGER NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_pending_guild_user ON pending_reviews(guild_id, user_id)",
+    # ---- Behavioural event tables (Phase 1) ----
+    """CREATE TABLE IF NOT EXISTS presence_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        timestamp INTEGER NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_presence_guild_user_time ON presence_events(guild_id, user_id, timestamp DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_presence_guild_time ON presence_events(guild_id, timestamp DESC)",
+    """CREATE TABLE IF NOT EXISTS voice_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        channel_id INTEGER,
+        event_type TEXT NOT NULL,
+        timestamp INTEGER NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_voice_guild_user_time ON voice_events(guild_id, user_id, timestamp DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_voice_guild_time ON voice_events(guild_id, timestamp DESC)",
+    """CREATE TABLE IF NOT EXISTS activity_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        activity_type TEXT NOT NULL,
+        activity_name TEXT NOT NULL,
+        timestamp INTEGER NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_activity_guild_time ON activity_events(guild_id, timestamp DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_activity_guild_user_time ON activity_events(guild_id, user_id, timestamp DESC)",
 ]
 
 
