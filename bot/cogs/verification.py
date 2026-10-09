@@ -95,9 +95,8 @@ class RobloxLinkModal(discord.ui.Modal):
 class VerifyPanelView(discord.ui.View):
     """Persistent public verification panel.
 
-    Note: discord.py dispatches all clicks on this custom_id to ONE instance
-    of this view, so instance-level state is effectively a singleton.
-    We use that for a per-user in-flight guard.
+    discord.py dispatches clicks on this custom_id to one view instance, so
+    instance state acts as a per-user in-flight guard against double-clicks.
     """
 
     def __init__(self) -> None:
@@ -115,13 +114,11 @@ class VerifyPanelView(discord.ui.View):
             return await interaction.response.send_message(
                 "Verification service is offline. Please try again later.", ephemeral=True)
 
-        # --- Ack IMMEDIATELY so Discord never shows "didn't respond" ---
         try:
             await interaction.response.defer(ephemeral=True)
         except Exception:
             return
 
-        # --- In-flight guard (atomic - no await between check and add) ---
         key = (interaction.guild_id, interaction.user.id)
         if key in self._in_flight:
             return await interaction.followup.send(
@@ -131,7 +128,6 @@ class VerifyPanelView(discord.ui.View):
         self._in_flight.add(key)
 
         try:
-            # --- Existing session check ---
             try:
                 existing = await svc.sessions.get_active_for_user(
                     interaction.guild_id, interaction.user.id)
@@ -152,7 +148,6 @@ class VerifyPanelView(discord.ui.View):
                         ephemeral=True,
                     )
 
-            # --- Create session ---
             try:
                 sess = await svc.create_session(interaction.guild_id, interaction.user.id)
             except Exception as exc:
@@ -165,7 +160,6 @@ class VerifyPanelView(discord.ui.View):
                 return await interaction.followup.send(
                     "You are doing that too quickly. Please wait a moment.", ephemeral=True)
 
-            # --- Run verification ---
             try:
                 verdict = await svc.verify(
                     interaction.guild_id, interaction.user.id, sess.session_id)
@@ -176,7 +170,6 @@ class VerifyPanelView(discord.ui.View):
                     ephemeral=True,
                 )
 
-            # --- Finish ---
             await _finish(interaction, svc, sess.session_id, verdict)
         finally:
             self._in_flight.discard(key)
@@ -697,6 +690,7 @@ class Verification(commands.Cog):
             session_timeout=int(os.getenv("VERIFY_SESSION_TIMEOUT", "900")),
         )
         bot.verification = self.service  # type: ignore[attr-defined]
+        self._behaviour_sweep_counter = 0
 
     async def cog_load(self) -> None:
         self.bot.add_view(VerifyPanelView())
@@ -724,8 +718,17 @@ class Verification(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def _cleanup(self) -> None:
+        # Session expiry
         try:
             await self.service.sessions.cleanup_expired()
+        except Exception:
+            pass
+        # Behavioural event retention - runs hourly
+        try:
+            self._behaviour_sweep_counter += 1
+            if self._behaviour_sweep_counter >= 12:
+                self._behaviour_sweep_counter = 0
+                await self.service.cleanup_old_behavioral_events()
         except Exception:
             pass
 
@@ -733,6 +736,7 @@ class Verification(commands.Cog):
     async def _before_cleanup(self) -> None:
         await self.bot.wait_until_ready()
 
+    # ---- Event listeners ----
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
         try:
@@ -793,6 +797,23 @@ class Verification(commands.Cog):
             except Exception:
                 pass
 
+    @commands.Cog.listener()
+    async def on_presence_update(self, before: discord.Member, after: discord.Member) -> None:
+        try:
+            await self.service.on_presence_update(before, after)
+        except Exception:
+            pass
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member: discord.Member,
+                                    before: discord.VoiceState,
+                                    after: discord.VoiceState) -> None:
+        try:
+            await self.service.on_voice_state_update(member, before, after)
+        except Exception:
+            pass
+
+    # ---- Commands ----
     @app_commands.command(name="verify", description="Start verification.")
     async def verify(self, interaction: discord.Interaction):
         if interaction.guild_id is None:
