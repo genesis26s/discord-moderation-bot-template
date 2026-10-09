@@ -35,6 +35,7 @@ INITIAL_COGS = [
     "bot.cogs.security",
     "bot.cogs.verification",
     "bot.cogs.owner",
+    "bot.cogs.embed",
 ]
 
 
