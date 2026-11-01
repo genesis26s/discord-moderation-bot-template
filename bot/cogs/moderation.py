@@ -12,14 +12,13 @@ from bot.core.checks import is_moderator
 from bot.core.utilities import parse_duration, humanize_timedelta
 from bot.services.logging_service import LoggingService
 from bot.services.moderation_service import ModerationService
-from bot.views.common import ConfirmView
 
 
 class Moderation(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        logging = LoggingService(bot.db)  # type: ignore[attr-defined]
-        self.service = ModerationService(bot.db, logging)  # type: ignore[attr-defined]
+        logging_svc = LoggingService(bot.db)  # type: ignore[attr-defined]
+        self.service = ModerationService(bot.db, logging_svc)  # type: ignore[attr-defined]
 
     def _check_hierarchy(self, interaction: discord.Interaction, target: discord.Member) -> Optional[str]:
         me = interaction.guild.me  # type: ignore[union-attr]
@@ -36,78 +35,96 @@ class Moderation(commands.Cog):
             return "You cannot moderate this user — their role is higher than or equal to yours."
         return None
 
-    # ---- /ban ----
     @app_commands.command(name="ban", description="Ban a member.")
     @app_commands.describe(member="Member to ban", reason="Reason", delete_days="Days of messages to delete (0-7)")
     @is_moderator()
     async def ban(self, interaction: discord.Interaction, member: discord.Member, reason: Optional[str] = None, delete_days: app_commands.Range[int, 0, 7] = 0) -> None:
+        await interaction.response.defer(ephemeral=True)
         err = self._check_hierarchy(interaction, member)
         if err:
-            return await interaction.response.send_message(err, ephemeral=True)
-        await member.ban(reason=f"{interaction.user}: {reason or 'No reason'}", delete_message_days=delete_days)
+            return await interaction.followup.send(err, ephemeral=True)
+        
+        try:
+            await member.ban(reason=f"{interaction.user}: {reason or 'No reason'}", delete_message_days=delete_days)
+        except discord.Forbidden:
+            return await interaction.followup.send("I don't have permission to ban this user.", ephemeral=True)
+            
         await self.service.record_action(interaction.guild_id, member.id, interaction.user.id, "ban", reason)  # type: ignore[arg-type]
         await self.service.log_case(
             interaction.guild, action="Ban", user=member, moderator=interaction.user, reason=reason, color=0xED4245,  # type: ignore[arg-type]
         )
-        await interaction.response.send_message(f"🔨 Banned **{member}**.", ephemeral=True)
+        await interaction.followup.send(f"🔨 Banned **{member}**.", ephemeral=True)
 
     @app_commands.command(name="unban", description="Unban a user by ID.")
     @is_moderator()
     async def unban(self, interaction: discord.Interaction, user_id: str, reason: Optional[str] = None) -> None:
-        try:
-            user = discord.Object(id=int(user_id))
-        except ValueError:
-            return await interaction.response.send_message("Invalid user ID.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        if not user_id.isdigit():
+            return await interaction.followup.send("Invalid user ID.", ephemeral=True)
+            
+        user = discord.Object(id=int(user_id))
         try:
             await interaction.guild.unban(user, reason=f"{interaction.user}: {reason or 'No reason'}")  # type: ignore[union-attr]
         except discord.NotFound:
-            return await interaction.response.send_message("That user is not banned.", ephemeral=True)
-        await interaction.response.send_message(f"✅ Unbanned `{user_id}`.", ephemeral=True)
+            return await interaction.followup.send("That user is not banned.", ephemeral=True)
+        await interaction.followup.send(f"✅ Unbanned `{user_id}`.", ephemeral=True)
 
     @app_commands.command(name="kick", description="Kick a member.")
     @is_moderator()
     async def kick(self, interaction: discord.Interaction, member: discord.Member, reason: Optional[str] = None) -> None:
+        await interaction.response.defer(ephemeral=True)
         err = self._check_hierarchy(interaction, member)
         if err:
-            return await interaction.response.send_message(err, ephemeral=True)
-        await member.kick(reason=f"{interaction.user}: {reason or 'No reason'}")
+            return await interaction.followup.send(err, ephemeral=True)
+            
+        try:
+            await member.kick(reason=f"{interaction.user}: {reason or 'No reason'}")
+        except discord.Forbidden:
+            return await interaction.followup.send("I don't have permission to kick this user.", ephemeral=True)
+            
         await self.service.record_action(interaction.guild_id, member.id, interaction.user.id, "kick", reason)  # type: ignore[arg-type]
         await self.service.log_case(
             interaction.guild, action="Kick", user=member, moderator=interaction.user, reason=reason, color=0xFEE75C,  # type: ignore[arg-type]
         )
-        await interaction.response.send_message(f"👢 Kicked **{member}**.", ephemeral=True)
+        await interaction.followup.send(f"👢 Kicked **{member}**.", ephemeral=True)
 
     @app_commands.command(name="timeout", description="Timeout a member.")
     @is_moderator()
     async def timeout(self, interaction: discord.Interaction, member: discord.Member, duration: str, reason: Optional[str] = None) -> None:
+        await interaction.response.defer(ephemeral=True)
         td = parse_duration(duration)
         if td is None or td > timedelta(days=28):
-            return await interaction.response.send_message("Invalid duration. Use e.g. `10m`, `2h`, `1d` (max 28d).", ephemeral=True)
+            return await interaction.followup.send("Invalid duration. Use e.g. `10m`, `2h`, `1d` (max 28d).", ephemeral=True)
+            
         err = self._check_hierarchy(interaction, member)
         if err:
-            return await interaction.response.send_message(err, ephemeral=True)
+            return await interaction.followup.send(err, ephemeral=True)
+            
         try:
             await member.timeout(td, reason=f"{interaction.user}: {reason or 'No reason'}")
         except discord.Forbidden:
-            return await interaction.response.send_message("I lack permission to timeout that member.", ephemeral=True)
+            return await interaction.followup.send("I lack permission to timeout that member.", ephemeral=True)
+            
         await self.service.record_action(interaction.guild_id, member.id, interaction.user.id, "timeout", reason, int(td.total_seconds()))  # type: ignore[arg-type]
-        await interaction.response.send_message(f"⏳ Timed out **{member}** for {humanize_timedelta(td)}.", ephemeral=True)
+        await interaction.followup.send(f"⏳ Timed out **{member}** for {humanize_timedelta(td)}.", ephemeral=True)
 
     @app_commands.command(name="untimeout", description="Remove a timeout.")
     @is_moderator()
     async def untimeout(self, interaction: discord.Interaction, member: discord.Member, reason: Optional[str] = None) -> None:
+        await interaction.response.defer(ephemeral=True)
         await member.timeout(None, reason=f"{interaction.user}: {reason or 'No reason'}")
-        await interaction.response.send_message(f"✅ Removed timeout for **{member}**.", ephemeral=True)
+        await interaction.followup.send(f"✅ Removed timeout for **{member}**.", ephemeral=True)
 
     @app_commands.command(name="warn", description="Warn a member.")
     @is_moderator()
     async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str) -> None:
+        await interaction.response.defer(ephemeral=True)
         warn_id = await self.service.add_warning(interaction.guild_id, member.id, interaction.user.id, reason)  # type: ignore[arg-type]
         await self.service.log_case(
             interaction.guild, action="Warn", user=member, moderator=interaction.user, reason=reason, color=0xFEE75C,  # type: ignore[arg-type]
             extra_fields=[("Warning ID", str(warn_id), True)],
         )
-        await interaction.response.send_message(f"⚠ Warned **{member}** (ID `{warn_id}`).", ephemeral=True)
+        await interaction.followup.send(f"⚠ Warned **{member}** (ID `{warn_id}`).", ephemeral=True)
 
     @app_commands.command(name="unwarn", description="Delete a warning by ID.")
     @is_moderator()
@@ -133,16 +150,20 @@ class Moderation(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="purge", description="Bulk delete recent messages.")
-    @app_commands.describe(amount="Number of messages (1-100)", member="Only delete messages from this user")
     @is_moderator()
     async def purge(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100], member: Optional[discord.Member] = None) -> None:
         if not isinstance(interaction.channel, discord.TextChannel):
             return await interaction.response.send_message("Use in a text channel.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
+        
         def check(m: discord.Message) -> bool:
             return member is None or m.author.id == member.id
-        deleted = await interaction.channel.purge(limit=amount, check=check)
-        await interaction.followup.send(f"🧹 Deleted `{len(deleted)}` message(s).", ephemeral=True)
+            
+        try:
+            deleted = await interaction.channel.purge(limit=amount, check=check)
+            await interaction.followup.send(f"🧹 Deleted `{len(deleted)}` message(s).", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ Failed to purge. Discord does not allow deleting messages older than 14 days. Error: {e}", ephemeral=True)
 
     @app_commands.command(name="slowmode", description="Set channel slowmode.")
     @is_moderator()
@@ -177,12 +198,17 @@ class Moderation(commands.Cog):
     @app_commands.command(name="softban", description="Ban then unban to clear messages.")
     @is_moderator()
     async def softban(self, interaction: discord.Interaction, member: discord.Member, reason: Optional[str] = None) -> None:
+        await interaction.response.defer(ephemeral=True)
         err = self._check_hierarchy(interaction, member)
         if err:
-            return await interaction.response.send_message(err, ephemeral=True)
-        await member.ban(reason=f"Softban: {reason or '—'}", delete_message_days=7)
-        await interaction.guild.unban(member, reason="Softban — auto-unban")  # type: ignore[union-attr]
-        await interaction.response.send_message(f"🧹 Softbanned **{member}**.", ephemeral=True)
+            return await interaction.followup.send(err, ephemeral=True)
+            
+        try:
+            await member.ban(reason=f"Softban: {reason or '—'}", delete_message_days=7)
+            await interaction.guild.unban(member, reason="Softban — auto-unban")  # type: ignore[union-attr]
+            await interaction.followup.send(f"🧹 Softbanned **{member}**.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("I lack permissions to softban this user.", ephemeral=True)
 
     @app_commands.command(name="nick", description="Change a member's nickname.")
     @is_moderator()
@@ -218,10 +244,7 @@ class Moderation(commands.Cog):
     @app_commands.command(name="moderation-config", description="Open the moderation configuration panel.")
     @is_moderator()
     async def moderation_config(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(
-            "Open `/panel` → **Moderation** to configure moderation settings interactively.",
-            ephemeral=True,
-        )
+        await interaction.response.send_message("Open `/panel` → **Moderation** to configure moderation settings.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
