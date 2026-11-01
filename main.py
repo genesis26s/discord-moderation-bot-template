@@ -7,6 +7,7 @@ import logging
 from bot.config import Config
 from bot.core.bot import SecurityBot
 
+log = logging.getLogger(__name__)
 
 def setup_logging(level: str) -> None:
     logging.basicConfig(
@@ -15,15 +16,24 @@ def setup_logging(level: str) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-
 async def main() -> None:
     config = Config.load()
     setup_logging(config.log_level)
 
-    bot = SecurityBot(config)
-    async with bot:
-        await bot.start(config.token)
-
+    while True:
+        bot = SecurityBot(config)
+        try:
+            async with bot:
+                await bot.start(config.token)
+            return
+        except KeyboardInterrupt:
+            return
+        except Exception as exc:
+            log.error("Bot crashed: %s. Retrying in 30 seconds...", exc)
+            try:
+                await asyncio.sleep(30)
+            except KeyboardInterrupt:
+                return
 
 if __name__ == "__main__":
     try:
