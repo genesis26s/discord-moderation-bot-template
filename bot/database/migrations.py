@@ -1,4 +1,4 @@
-"""Schema definitions. Runs on every startup; uses IF NOT EXISTS."""
+"""Base schema definitions. Runs on every startup; uses IF NOT EXISTS."""
 from __future__ import annotations
 
 from bot.database.database import Database
@@ -18,7 +18,7 @@ MIGRATIONS: list[str] = [
     CREATE TABLE IF NOT EXISTS staff_roles (
         guild_id INTEGER NOT NULL,
         role_id INTEGER NOT NULL,
-        kind TEXT NOT NULL DEFAULT 'staff',  -- 'staff' | 'admin'
+        kind TEXT NOT NULL DEFAULT 'staff',
         PRIMARY KEY (guild_id, role_id, kind)
     )
     """,
@@ -78,7 +78,7 @@ MIGRATIONS: list[str] = [
         panel_id INTEGER,
         name TEXT NOT NULL,
         emoji TEXT,
-        category_id INTEGER,          -- discord category channel id
+        category_id INTEGER,
         support_role_id INTEGER,
         naming_template TEXT DEFAULT 'ticket-{username}',
         max_open_per_user INTEGER DEFAULT 1,
@@ -96,7 +96,7 @@ MIGRATIONS: list[str] = [
         category_id INTEGER,
         user_id INTEGER NOT NULL,
         claimed_by INTEGER,
-        status TEXT NOT NULL DEFAULT 'open',  -- open | closed
+        status TEXT NOT NULL DEFAULT 'open',
         created_at INTEGER NOT NULL,
         closed_at INTEGER
     )
@@ -106,8 +106,8 @@ MIGRATIONS: list[str] = [
     CREATE TABLE IF NOT EXISTS incidents (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id INTEGER NOT NULL,
-        type TEXT NOT NULL,          -- antinuke | antiraid | antispam | serverwatch
-        severity TEXT NOT NULL,      -- LOW | MEDIUM | HIGH | CRITICAL
+        type TEXT NOT NULL,
+        severity TEXT NOT NULL,
         executor_id INTEGER,
         details TEXT,
         created_at INTEGER NOT NULL
@@ -125,13 +125,12 @@ MIGRATIONS: list[str] = [
         created_at INTEGER NOT NULL
     )
     """,
-    # ---- Warnings table name kept as `warnings` for the API ----
-    # ---- Premium/ignore lists ----
+    # ---- Ignore lists ----
     """
     CREATE TABLE IF NOT EXISTS ignore_channels (
         guild_id INTEGER NOT NULL,
         channel_id INTEGER NOT NULL,
-        feature TEXT NOT NULL,      -- 'antispam' | 'automod' | ...
+        feature TEXT NOT NULL,
         PRIMARY KEY (guild_id, channel_id, feature)
     )
     """,
@@ -155,6 +154,12 @@ MIGRATIONS: list[str] = [
         created_at INTEGER NOT NULL
     )
     """,
+    
+    # --- Performance Optimization Indexes ---
+    # These ensure the bot stays lightning fast even after 100,000+ tickets
+    "CREATE INDEX IF NOT EXISTS idx_tickets_guild_user_status ON tickets (guild_id, user_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_ticket_ratings_guild_ticket ON ticket_ratings (guild_id, ticket_id)",
+    "CREATE INDEX IF NOT EXISTS idx_mod_actions_guild_user ON mod_actions (guild_id, user_id)",
 ]
 
 
