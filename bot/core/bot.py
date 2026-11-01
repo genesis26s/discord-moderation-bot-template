@@ -34,7 +34,6 @@ INITIAL_COGS = [
     "bot.cogs.security",
     "bot.cogs.owner",
     "bot.cogs.embed",
-    "bot.cogs.mass_dm",
 ]
 
 
@@ -63,7 +62,6 @@ class SecurityBot(commands.Bot):
         intents.guilds = True
         intents.moderation = True
         intents.guild_messages = True
-        intents.presences = True
 
         super().__init__(
             command_prefix=commands.when_mentioned,
