@@ -1,4 +1,4 @@
-"""Centralized logging emitter. Every field is redacted at the sink."""
+"""Centralized logging emitter."""
 from __future__ import annotations
 
 import logging
@@ -8,7 +8,6 @@ from typing import Optional
 import discord
 
 from bot.database.database import Database
-from bot.verification.redaction import RedactionManager
 
 log = logging.getLogger(__name__)
 
@@ -19,15 +18,7 @@ CATEGORY_KEYS = {
     "members":      "log_members",
     "security":     "log_security",
     "tickets":      "log_tickets",
-    "verification": "log_security",
 }
-
-
-def _clean(value) -> str:
-    """Redact any string before it enters an embed."""
-    if value is None:
-        return ""
-    return RedactionManager.redact(value)
 
 
 class LoggingService:
@@ -62,15 +53,15 @@ class LoggingService:
             return
 
         embed = discord.Embed(
-            title=_clean(title)[:256],
-            description=_clean(description)[:4000] if description else None,
+            title=str(title)[:256],
+            description=str(description)[:4000] if description else None,
             color=color,
             timestamp=datetime.now(timezone.utc),
         )
         for name, value, inline in (fields or []):
             embed.add_field(
-                name=_clean(name)[:256],
-                value=(_clean(value)[:1024] or "-"),
+                name=str(name)[:256],
+                value=(str(value)[:1024] or "-"),
                 inline=inline,
             )
         try:
