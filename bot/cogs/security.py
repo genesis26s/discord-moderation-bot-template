@@ -21,7 +21,7 @@ class Security(commands.Cog):
     @app_commands.command(name="security", description="Show the security dashboard.")
     @is_guild_admin()
     async def security(self, interaction: discord.Interaction) -> None:
-        gid = interaction.guild_id  # type: ignore[assignment]
+        gid = interaction.guild_id
         embed = self.bot.embeds.primary(title="🛡️ Security Dashboard")  # type: ignore[attr-defined]
 
         def state(b: bool) -> str:
@@ -33,7 +33,6 @@ class Security(commands.Cog):
         embed.add_field(name="AutoMod", value=state(await self.config.get_bool(gid, "automod_enabled")), inline=True)
         embed.add_field(name="Server Watch", value=state(await self.config.get_bool(gid, "serverwatch_enabled")), inline=True)
         embed.add_field(name="Lockdown", value=state(await self.config.get_bool(gid, "lockdown_active")), inline=True)
-
         incidents = await self.service.recent_incidents(gid, limit=5)
         embed.add_field(name="Recent Threats", value=f"`{len(incidents)}`", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -41,10 +40,7 @@ class Security(commands.Cog):
     @app_commands.command(name="security-config", description="Open the security configuration panel.")
     @is_guild_admin()
     async def security_config(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(
-            "Open `/panel` → **Security Overview** to configure interactively.",
-            ephemeral=True,
-        )
+        await interaction.response.send_message("Open `/panel` → **Security Overview** to configure.", ephemeral=True)
 
     @app_commands.command(name="lockdown", description="Activate emergency lockdown (locks all channels).")
     @is_guild_admin()
@@ -55,15 +51,16 @@ class Security(commands.Cog):
         if not view.result:
             return
         locked = await self.service.lock_channels(interaction.guild, reason=f"Lockdown by {interaction.user}")  # type: ignore[arg-type]
-        await self.config.set(interaction.guild_id, "lockdown_active", "true")  # type: ignore[arg-type]
+        await self.config.set(interaction.guild_id, "lockdown_active", "true")
         await interaction.followup.send(f"🔒 Locked `{locked}` channels.", ephemeral=True)
 
     @app_commands.command(name="unlockdown", description="Lift the emergency lockdown.")
     @is_guild_admin()
     async def unlockdown(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
         unlocked = await self.service.unlock_channels(interaction.guild, reason=f"Unlockdown by {interaction.user}")  # type: ignore[arg-type]
-        await self.config.set(interaction.guild_id, "lockdown_active", "false")  # type: ignore[arg-type]
-        await interaction.response.send_message(f"🔓 Unlocked `{unlocked}` channels.", ephemeral=True)
+        await self.config.set(interaction.guild_id, "lockdown_active", "false")
+        await interaction.followup.send(f"🔓 Unlocked `{unlocked}` channels.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
