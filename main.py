@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import discord
 from bot.config import Config
 from bot.core.bot import SecurityBot
 
@@ -27,6 +28,17 @@ async def main() -> None:
                 await bot.start(config.token)
             return
         except KeyboardInterrupt:
+            return
+        except discord.errors.PrivilegedIntentsRequired as e:
+            log.error("=====================================================")
+            log.error("FATAL ERROR: Missing Privileged Intents!")
+            log.error("Your bot is trying to use Intents that are not enabled.")
+            log.error("You MUST go to the Discord Developer Portal:")
+            log.error("1. Go to your Application -> Bot tab.")
+            log.error("2. Scroll down to 'Privileged Gateway Intents'.")
+            log.error("3. Turn ON 'Server Members Intent' and 'Message Content Intent'.")
+            log.error("4. Save changes and restart the bot.")
+            log.error("=====================================================")
             return
         except Exception as exc:
             log.error("Bot crashed: %s. Retrying in 30 seconds...", exc)
