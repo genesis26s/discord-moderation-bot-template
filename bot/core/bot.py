@@ -14,7 +14,6 @@ from bot.core import errors
 from bot.core.embeds import EmbedFactory
 from bot.database.database import Database
 from bot.database.migrations import run_migrations
-from bot.verification.db import ensure_schema
 
 log = logging.getLogger(__name__)
 
@@ -33,9 +32,9 @@ INITIAL_COGS = [
     "bot.cogs.utility",
     "bot.cogs.information",
     "bot.cogs.security",
-    "bot.cogs.verification",
     "bot.cogs.owner",
     "bot.cogs.embed",
+    "bot.cogs.mass_dm",
 ]
 
 
@@ -81,11 +80,6 @@ class SecurityBot(commands.Bot):
     async def setup_hook(self) -> None:
         await self.db.connect()
         await run_migrations(self.db)
-
-        try:
-            await ensure_schema(self.db)
-        except Exception:
-            log.exception("Failed to initialise verification schema")
 
         for ext in INITIAL_COGS:
             try:
@@ -137,19 +131,6 @@ class SecurityBot(commands.Bot):
         )
 
     async def close(self) -> None:
-        try:
-            cog = self.get_cog("Verification")
-            if cog is not None:
-                svc = getattr(cog, "service", None)
-                if svc is not None:
-                    roblox = getattr(svc, "roblox_provider", None)
-                    if roblox is not None and hasattr(roblox, "close"):
-                        try:
-                            await roblox.close()
-                        except Exception:
-                            pass
-        except Exception:
-            pass
         await self.db.close()
         await super().close()
 
