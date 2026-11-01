@@ -7,25 +7,6 @@ from discord.ext import commands
 
 
 HELP_SECTIONS = {
-    "Verification": [
-        "/verification-panel - Post the public verification panel",
-        "/verify - Start verification (same as the button)",
-        "/verify-roblox - Link your Roblox account",
-        "/verify-roblox-status - Show your linked Roblox account",
-        "/verify-unlink - Unlink your Roblox account",
-        "/verify-status - Show a member's latest assessment",
-        "/verify-queue - List members pending manual review",
-        "/verify-review - Open the review panel for a member",
-        "/verify-false-positive - Mark an assessment as a false positive",
-        "/verify-raid-mode - Activate / deactivate raid mode",
-        "/verify-set-raid-channel - Set the raid alert channel",
-        "/verify-stats - Show verification statistics",
-        "/verification-config - Show verification configuration",
-        "/verification-role - Set the role given on success",
-        "/verification-quarantine-role - Set the quarantine role",
-        "/verify-add-signature - Add an abuse signature",
-        "/verify-remove-signature - Remove an abuse signature",
-    ],
     "Security": [
         "/security - Security dashboard",
         "/security-config - Configure security systems",
@@ -53,6 +34,8 @@ HELP_SECTIONS = {
         "/ticket-add, /ticket-remove",
         "/ticket-claim, /ticket-close, /ticket-reopen",
         "/ticket-delete, /ticket-transcript, /ticket-rename",
+        "/ticket-ratings, /ticket-ratings-history",
+        "/ticket-emojis",
     ],
     "Welcome & Logging": [
         "/welcome-config, /welcome-test, /goodbye-test",
@@ -69,6 +52,7 @@ HELP_SECTIONS = {
     "Server & Utility": [
         "/panel - Central control center",
         "/embed - Post or edit a custom embed",
+        "/dm - Mass DM all members (Careful!)",
         "/server, /serverinfo, /membercount",
         "/roles, /channels, /config",
         "/avatar, /userinfo, /servericon",
@@ -117,8 +101,7 @@ class Information(commands.Cog):
             title="Help",
             description=(
                 "Select a category from the dropdown to see its commands.\n\n"
-                "New here? Start with `/panel` to configure the bot, or "
-                "`/verification-panel` to set up verification."
+                "New here? Start with `/panel` to configure the bot."
             ),
         )
         await interaction.response.send_message(embed=embed, view=HelpView(), ephemeral=True)
