@@ -52,7 +52,6 @@ HELP_SECTIONS = {
     "Server & Utility": [
         "/panel - Central control center",
         "/embed - Post or edit a custom embed",
-        "/dm - Mass DM all members (Careful!)",
         "/server, /serverinfo, /membercount",
         "/roles, /channels, /config",
         "/avatar, /userinfo, /servericon",
