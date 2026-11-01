@@ -494,12 +494,14 @@ class ChannelRolePickerView(discord.ui.View):
         await interaction.response.defer()
 
     async def _on_save(self, interaction: discord.Interaction):
+        # Defer first so the interaction doesn't time out
+        await interaction.response.defer()
         await interaction.client.db.execute(
             "UPDATE ticket_categories SET category_id = ?, support_role_id = ? WHERE id = ? AND guild_id = ?",
             (self.chosen_category, self.chosen_role, self.category_id, self.guild_id),
         )
         await _refresh_panel_view(interaction.client, self.guild_id, self.panel_id)
-        await interaction.response.edit_message(content="Category saved.", view=None)
+        await interaction.edit_original_response(content="Category saved.", view=None)
 
 
 # ---------------------------------------------------------------------------
